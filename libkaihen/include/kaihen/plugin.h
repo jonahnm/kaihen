@@ -50,6 +50,7 @@
 #pragma once
 
 #include <switch.h>
+#include "hook.h"
 #include "protocol.h"
 
 #ifdef __cplusplus
@@ -134,6 +135,32 @@ Result pluginServiceStop(PluginService* service);
 
 /// Closes the services and the handles from the bootstrap.
 void pluginRuntimeExit(void);
+
+/**
+ * @brief Installs an inline hook in FS.
+ * @param target The FS function entry. A pointer-authentication signature is
+ *        stripped.
+ * @param replacement The existing FS code that the target's entry branches
+ *        to. A replacement farther than 128 MiB from the target is reached
+ *        indirectly and must start with a BTI landing pad.
+ * @param[out] out The installed hook, including the trampoline that runs the
+ *        original prologue and jumps back.
+ * @note Only plugins have this interface: HEN serves it on the session that
+ *       the bootstrap gives a plugin during its handoff, never on a homebrew
+ *       session. HEN needs the FS process handle that the bootstrap adopts
+ *       after the plugins start; a call before then returns
+ *       LibnxError_NotInitialized.
+ */
+Result pluginFsHookInstall(u64 target, u64 replacement, HenFsHookInfo* out);
+
+/// Restores the original instructions of an installed FS hook.
+Result pluginFsHookRemove(u32 id);
+
+/// Returns the number of installed FS hooks.
+Result pluginFsHookCount(u32* out_count);
+
+/// Returns the FS hook at @p index in installation order.
+Result pluginFsHookInfo(u32 index, HenFsHookInfo* out);
 
 #ifdef __cplusplus
 }

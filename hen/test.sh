@@ -13,3 +13,7 @@ $cxx $flags -I"$nx/include" -I../libkaihen/include tests/mount_request_test.cpp 
 build/tests/mount_request
 $cxx $flags -I"$nx/include" -I../libkaihen/include tests/sm_request_test.cpp -o build/tests/sm_request
 build/tests/sm_request
+$cxx $flags -I"$nx/include" -I../libkaihen/include source/inline_hook.cpp tests/inline_hook_test.cpp -o build/tests/inline_hook
+build/tests/inline_hook
+$cxx $flags -I"$nx/include" -I../libkaihen/include source/inline_hook.cpp source/fs_hook.cpp tests/fs_hook_test.cpp -o build/tests/fs_hook
+build/tests/fs_hook

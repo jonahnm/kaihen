@@ -72,5 +72,32 @@ returns the client end. Callers do not share one plugin session. HEN closes
 its control-session copy at exit; the plugin owns its server end until
 `pluginRuntimeExit`. These new commands require protocol version 6.
 
+## FS hooks
+
+A plugin also receives a session for HEN's FS hook interface, declared in
+`include/kaihen/hook.h`. It is plugin-only: the bootstrap asks HEN for a
+plugin session during the handoff, and the homebrew interface never serves
+these commands. A plugin that HEN could not give a session keeps running
+without hooks. The handoff carries one more input handle than before;
+rebuild plugins against this runtime, because a runtime built before it
+rejects the three-handle handoff.
+
+`pluginFsHookInstall(target, replacement, &info)` replaces the first
+instructions of an FS function with a branch to `replacement`, and writes a
+trampoline into writable FS code. `target` and `replacement` are addresses in
+FS; HEN strips their pointer-authentication signatures and keeps a BTI
+landing pad at the function entry. It copies PAC prologues (`PACIASP` and
+the other SP-based forms) into the trampoline, so the function's
+`AUTIASP` still verifies its link register. A replacement farther than
+128 MiB from the target is reached with an indirect branch and must start
+with a BTI landing pad. The returned `info.trampoline` runs the original
+prologue and jumps back; `pluginFsHookRemove` restores the original
+instructions.
+
+HEN writes FS code through RO's `ro:dmnt` endpoint, which needs the FS
+process handle that the bootstrap adopts after the plugins start. A hook
+install before then returns `LibnxError_NotInitialized`. Hooks stay installed
+until removed, including after the plugin's session closes.
+
 Plugins link `-lounce_core`, libounce without mimalloc, and keep newlib's
 malloc.

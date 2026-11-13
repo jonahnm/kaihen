@@ -20,6 +20,7 @@ enum HenControlCommand {
     HenControlCommand_ReleaseControlPort = 13,
     HenControlCommand_CreateServiceManagerSession = 14,
     HenControlCommand_CloneFilesystemRoot = 15,
+    HenControlCommand_CreatePluginSession = 16,
 };
 
 
@@ -119,6 +120,16 @@ NX_INLINE Result henCreateServiceManagerSession(Service* s, Handle* out) {
 /// Get a new clone of HEN's FS root, for a plugin. The caller owns it.
 NX_INLINE Result henCloneFilesystemRoot(Service* s, Handle* out) {
     return serviceDispatch(s, HenControlCommand_CloneFilesystemRoot,
+        .out_handle_attrs = { SfOutHandleAttr_HipcCopy },
+        .out_handles = out,
+    );
+}
+
+/// Get a new plugin session for HEN's FS hook interface. The bootstrap gives
+/// the client end to a plugin during its handoff; only plugin sessions can
+/// install FS hooks. The caller owns the handle.
+NX_INLINE Result henCreatePluginSession(Service* s, Handle* out) {
+    return serviceDispatch(s, HenControlCommand_CreatePluginSession,
         .out_handle_attrs = { SfOutHandleAttr_HipcCopy },
         .out_handles = out,
     );

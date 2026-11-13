@@ -13,24 +13,33 @@ enum PluginStartupCommand : u32 {
 /// may add data or handles after the current ones, but keeps these.
 /// Versions 0 and 1 did not exist as such: the first runtime replied with a
 /// "publishes a service" flag in this word, and sent the third handle only
-/// when the flag was 1.
-constexpr u32 PluginRuntimeVersion = 2;
+/// when the flag was 1. Version 3's handoff may also carry the plugin's HEN
+/// hook session.
+constexpr u32 PluginRuntimeVersion = 3;
 
-/// Sends the plugin copies of the SM session and the FS root. The reply has
-/// the release event (writable), the ready event (readable) and the client
-/// end of the plugin's control session, which is INVALID_HANDLE when the
-/// plugin does not publish a service. The caller owns the returned handles.
+/// Sends the plugin copies of the SM session, the FS root and, when HEN could
+/// create one, its hook session. The reply has the release event (writable),
+/// the ready event (readable) and the client end of the plugin's control
+/// session, which is INVALID_HANDLE when the plugin does not publish a
+/// service. The caller owns the returned handles.
 NX_INLINE Result pluginAdoptHandles(Service* plugin, Handle sm, Handle fs_root,
-                                    Handle* release_event, Handle* ready_event,
-                                    Handle* control_session) {
+                                    Handle hook_session, Handle* release_event,
+                                    Handle* ready_event, Handle* control_session) {
     Handle handles[3] = {INVALID_HANDLE, INVALID_HANDLE, INVALID_HANDLE};
     u32 runtime_version = 0;
-    Result rc = serviceDispatchOut(plugin, PluginStartupCommand_AdoptHandles, runtime_version,
-        .in_num_handles = 2,
-        .in_handles = {sm, fs_root},
-        .out_handle_attrs = {SfOutHandleAttr_HipcCopy, SfOutHandleAttr_HipcCopy, SfOutHandleAttr_HipcCopy},
-        .out_handles = handles,
-    );
+    const Result rc = hook_session != INVALID_HANDLE
+        ? serviceDispatchOut(plugin, PluginStartupCommand_AdoptHandles, runtime_version,
+            .in_num_handles = 3,
+            .in_handles = {sm, fs_root, hook_session},
+            .out_handle_attrs = {SfOutHandleAttr_HipcCopy, SfOutHandleAttr_HipcCopy, SfOutHandleAttr_HipcCopy},
+            .out_handles = handles,
+        )
+        : serviceDispatchOut(plugin, PluginStartupCommand_AdoptHandles, runtime_version,
+            .in_num_handles = 2,
+            .in_handles = {sm, fs_root},
+            .out_handle_attrs = {SfOutHandleAttr_HipcCopy, SfOutHandleAttr_HipcCopy, SfOutHandleAttr_HipcCopy},
+            .out_handles = handles,
+        );
     if (R_FAILED(rc))
         return rc;
 

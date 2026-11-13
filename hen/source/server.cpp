@@ -37,6 +37,9 @@ HenServer::~HenServer() {
     for (Handle& process : homebrew_processes_) {
         ounce::closeHandle(&process);
     }
+    for (Handle& session : plugin_sessions_) {
+        ounce::closeHandle(&session);
+    }
     ounce::closeHandle(&port_);
     for (PluginRecord& plugin : plugins_) {
         ounce::closeHandle(&plugin.control_session);
@@ -120,6 +123,12 @@ void HenServer::collectWaits(WaitList& waits) const {
             waits.handles[waits.count++] = homebrew_sessions_[index];
         }
     }
+    for (u32 index = 0; index < MaxSessions; index++) {
+        if (plugin_sessions_[index] != INVALID_HANDLE) {
+            waits.sessions[waits.count] = {SessionKind::Plugin, index};
+            waits.handles[waits.count++] = plugin_sessions_[index];
+        }
+    }
 }
 
 /// Advances game arming between incoming requests.
@@ -173,8 +182,11 @@ Result HenServer::serveSession(SessionRef session) {
 }
 
 Handle& HenServer::sessionHandle(SessionRef session) {
-    return session.kind == SessionKind::Homebrew ? homebrew_sessions_[session.index]
-                                                 : sessions_[session.index];
+    if (session.kind == SessionKind::Homebrew)
+        return homebrew_sessions_[session.index];
+    if (session.kind == SessionKind::Plugin)
+        return plugin_sessions_[session.index];
+    return sessions_[session.index];
 }
 
 void HenServer::closeSession(SessionRef session) {
@@ -256,6 +268,8 @@ HenServer::CommandReply HenServer::serveRequest(const ReceivedRequest& request,
 
     if (session.kind == SessionKind::Control) {
         serveControlCommand(request, reply);
+    } else if (session.kind == SessionKind::Plugin) {
+        servePluginCommand(request, reply);
     } else {
         serveHomebrewCommand(request, session.index, reply);
     }
@@ -343,6 +357,14 @@ void HenServer::serveControlCommand(const ReceivedRequest& request, CommandReply
             std::memcpy(&plugin, request.data, sizeof(plugin));
             reply.result = adoptPlugin(plugin, handles[0]);
             reply.keeps_request_handles = R_SUCCEEDED(reply.result);
+        }
+        break;
+    case HenControlCommand_CreatePluginSession:
+        // The bootstrap gives this session to a plugin. Only it can install
+        // FS hooks; homebrew sessions cannot.
+        if (!copies) {
+            reply.result = createPluginSession(&reply.copy_handle);
+            reply.close_copy_after_send = R_SUCCEEDED(reply.result);
         }
         break;
     default:
@@ -474,6 +496,22 @@ Result HenServer::adoptServiceManager(Handle copied_session) {
     return 0;
 }
 
+Result HenServer::createPluginSession(Handle* out_client) {
+    for (u32 index = 0; index < MaxSessions; index++) {
+        if (plugin_sessions_[index] != INVALID_HANDLE)
+            continue;
+        Handle server = INVALID_HANDLE;
+        Handle client = INVALID_HANDLE;
+        Result rc = svcCreateSession(&server, &client, 0, 0);
+        if (R_SUCCEEDED(rc)) {
+            plugin_sessions_[index] = server;
+            *out_client = client;
+        }
+        return rc;
+    }
+    return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
+}
+
 Result HenServer::releaseControlPort() {
     if (port_ == INVALID_HANDLE) {
         return 0;
@@ -501,6 +539,70 @@ Result HenServer::adoptPlugin(const HenPluginRecord& plugin, Handle control_sess
     }
     plugins_[plugin_count_++] = {name, plugin.process_id, control_session};
     return 0;
+}
+
+//-----------------------------------------------------------------------------
+// Plugin commands
+//-----------------------------------------------------------------------------
+
+/// The FS hook interface. It is served on CreatePluginSession sessions only:
+/// the bootstrap gives one to each plugin, and homebrew has no way to obtain
+/// one. HEN writes FS code through RO's ro:dmnt endpoint, so the game arm's
+/// reader and FS process handle must have been adopted first.
+void HenServer::servePluginCommand(const ReceivedRequest& request, CommandReply& reply) {
+    if (request.num_copy_handles) {
+        return;
+    }
+
+    switch (request.command_id) {
+    case HenPluginCommand_InstallFsHook:
+        if (request.data_size >= sizeof(HenFsHookRequest)) {
+            HenFsHookRequest hook;
+            std::memcpy(&hook, request.data, sizeof(hook));
+            HenFsHookInfo info = {};
+            reply.result = installFsHook(hook, &info);
+            if (R_SUCCEEDED(reply.result))
+                reply.setData(info);
+        }
+        break;
+    case HenPluginCommand_RemoveFsHook:
+        if (request.data_size >= sizeof(u32)) {
+            u32 id = 0;
+            std::memcpy(&id, request.data, sizeof(id));
+            reply.result = fs_hooks_.remove(id);
+        }
+        break;
+    case HenPluginCommand_GetFsHookCount:
+        reply.result = 0;
+        reply.setData(fs_hooks_.count());
+        break;
+    case HenPluginCommand_GetFsHookInfo:
+        if (request.data_size >= sizeof(u32)) {
+            u32 index = 0;
+            std::memcpy(&index, request.data, sizeof(index));
+            HenFsHookInfo info = {};
+            reply.result = fs_hooks_.info(index, &info);
+            if (R_SUCCEEDED(reply.result))
+                reply.setData(info);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+Result HenServer::installFsHook(const HenFsHookRequest& request, HenFsHookInfo* out) {
+    if (!fs_hook_memory_.ready()) {
+        const Handle reader = game_.processReader();
+        const Handle process = game_.filesystemProcess();
+        if (reader == INVALID_HANDLE || process == INVALID_HANDLE)
+            return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+        fs_hook_memory_.configure(reader, process);
+        if (!fs_hook_memory_.ready())
+            return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+        fs_hooks_.setBackend(fs_hook_memory_.backend());
+    }
+    return fs_hooks_.install(request, out);
 }
 
 //-----------------------------------------------------------------------------

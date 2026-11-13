@@ -38,6 +38,19 @@ The FS root is already initialized. libounce installs it as the `fsp-srv`
 override and clones it without sending `SetCurrentProcess`, which would
 change the process identity that FS uses for every holder of the root.
 
+## Plugin FS hooks
+
+HEN gives each plugin a session of its own for FS hooks, created by
+`CreatePluginSession` during the bootstrap's handoff. The homebrew sessions
+never serve those commands. HEN builds AArch64 inline hooks
+(`source/inline_hook.cpp`): the patched entry branches to the plugin's
+replacement, and a trampoline keeps the overwritten prologue executable.
+PAC-signed targets are stripped, a BTI landing pad stays in place, and the
+trampoline runs the original PAC prologue. The patch and trampoline are
+written to FS through RO's `ro:dmnt` endpoint; a trampoline arena comes from
+RO's writable-code lookup, and HEN uses the FS process handle that
+`AdoptGameHandles1` brings.
+
 ## SM proxy
 
 Programs never receive FS's SM session: SM closes a session after a request

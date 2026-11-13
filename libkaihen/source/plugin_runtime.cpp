@@ -2,13 +2,14 @@
 // Startup for an kaiHEN plugin (include/kaihen/plugin.h).
 //
 // The plugin registers the temporary service mig:usr. The bootstrap connects
-// to it and sends AdoptHandles with copies of its SM session and FS root. The
-// reply has the runtime version (PluginRuntimeVersion) and three handles: a
-// release event, a ready event and the client end of the plugin's control
-// session, or INVALID_HANDLE for a plugin without a service. Once the
-// bootstrap has the reply it signals the release event, and the plugin
-// unregisters mig:usr. Then the plugin installs the SM session and FS root as
-// its services.
+// to it and sends AdoptHandles with copies of its SM session and FS root, and
+// of a HEN session that only plugins receive (the FS hook interface) when HEN
+// provided one. The reply has the runtime version (PluginRuntimeVersion) and
+// three handles: a release event, a ready event and the client end of the
+// plugin's control session, or INVALID_HANDLE for a plugin without a service.
+// Once the bootstrap has the reply it signals the release event, and the
+// plugin unregisters mig:usr. Then the plugin installs the SM session and FS
+// root as its services.
 #include <switch.h>
 
 #include "../include/kaihen/plugin.h"
@@ -34,6 +35,7 @@ constexpr u64 ReleaseTimeoutNs = 5000000000ull;
 struct ReceivedHandles {
     Handle sm_session = INVALID_HANDLE;
     Handle fs_root = INVALID_HANDLE;
+    Handle hook_session = INVALID_HANDLE;    ///< HEN's plugin-only FS hook interface.
     Handle ready_event = INVALID_HANDLE;     ///< Writable end; the plugin signals it.
     Handle control_session = INVALID_HANDLE; ///< Server end, when the plugin publishes a service.
 };
@@ -58,6 +60,7 @@ bool g_initialized = false;
 
 void closeReceivedHandles() {
     closeHandle(&g_received.control_session);
+    closeHandle(&g_received.hook_session);
     closeHandle(&g_received.ready_event);
     closeHandle(&g_received.fs_root);
     closeHandle(&g_received.sm_session);
@@ -67,7 +70,8 @@ bool isAdoptHandles(const ounce::CmifRequest& request) {
     const HipcMetadata& meta = request.hipc.meta;
     return request.valid && meta.type == CmifCommandType_Request &&
         request.command_id == PluginStartupCommand_AdoptHandles &&
-        meta.num_copy_handles == 2 && !meta.num_move_handles;
+        (meta.num_copy_handles == 2 || meta.num_copy_handles == 3) &&
+        !meta.num_move_handles;
 }
 
 /// Creates the events and the control session that the AdoptHandles reply
@@ -115,6 +119,8 @@ Result adoptHandles(void* message, const ounce::CmifRequest& request,
 
     g_received.sm_session = request.hipc.data.copy_handles[0];
     g_received.fs_root = request.hipc.data.copy_handles[1];
+    if (request.hipc.meta.num_copy_handles == 3)
+        g_received.hook_session = request.hipc.data.copy_handles[2];
 
     // The kernel passes an INVALID_HANDLE in the copy list through unchanged,
     // so a plugin without a service sends one in the third place.
@@ -230,6 +236,60 @@ Result pluginRuntimeInitialize(Handle* out_ready_event) {
     g_initialized = true;
     *out_ready_event = g_received.ready_event;
     return 0;
+}
+
+namespace {
+
+/// A service on HEN's plugin-only session. The caller does not close it: the
+/// runtime owns the handle from the handoff.
+Result openHookService(Service* out) {
+    if (g_received.hook_session == INVALID_HANDLE)
+        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+    serviceCreate(out, g_received.hook_session);
+    out->own_handle = false;
+    return 0;
+}
+
+} // namespace
+
+Result pluginFsHookInstall(u64 target, u64 replacement, HenFsHookInfo* out) {
+    if (!out)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    Service hook = {};
+    Result rc = openHookService(&hook);
+    if (R_SUCCEEDED(rc)) {
+        const HenFsHookRequest request = {target, replacement, 0, 0};
+        rc = serviceDispatchInOut(&hook, HenPluginCommand_InstallFsHook, request, *out);
+    }
+    return rc;
+}
+
+Result pluginFsHookRemove(u32 id) {
+    Service hook = {};
+    Result rc = openHookService(&hook);
+    if (R_SUCCEEDED(rc))
+        rc = serviceDispatchIn(&hook, HenPluginCommand_RemoveFsHook, id);
+    return rc;
+}
+
+Result pluginFsHookCount(u32* out_count) {
+    if (!out_count)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    Service hook = {};
+    Result rc = openHookService(&hook);
+    if (R_SUCCEEDED(rc))
+        rc = serviceDispatchOut(&hook, HenPluginCommand_GetFsHookCount, *out_count);
+    return rc;
+}
+
+Result pluginFsHookInfo(u32 index, HenFsHookInfo* out) {
+    if (!out)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    Service hook = {};
+    Result rc = openHookService(&hook);
+    if (R_SUCCEEDED(rc))
+        rc = serviceDispatchInOut(&hook, HenPluginCommand_GetFsHookInfo, index, *out);
+    return rc;
 }
 
 Result pluginRuntimeInitializeWithService(Handle* out_ready_event,

@@ -28,6 +28,11 @@ class GameArm {
     void step();
     HenGameStatus status() const;
 
+    /// The ro:dmnt reader and the real FS process handle that the bootstrap
+    /// adopted. They are INVALID_HANDLE until AdoptGameHandles1.
+    Handle processReader() const { return reader_session_; }
+    Handle filesystemProcess() const { return filesystem_process_; }
+
   private:
     enum class InputChoice {
         Unknown,

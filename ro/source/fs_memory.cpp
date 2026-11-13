@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <switch.h>
+#include <switch/arm/cache.h>
 #include "../../common/ro_dmnt.h"
 #include "session.h"
 #include "wire.h"
@@ -13,11 +14,12 @@ constexpr u64 FilesystemProgramId = 0x0400000000000000ULL;
 constexpr u64 PageSize = 0x1000;
 constexpr u64 MaximumReadSize = 0x400000;
 constexpr u64 MaximumWriteSize = 256;
+constexpr u64 MaximumArenaSize = 0x4000;
+constexpr u32 MaxScanBlocks = 4096;
 constexpr size_t MessageSize = 0x100;
 
-/// Checks that @p process is FS with the requested process ID, and that the
-/// range fits the caller's buffer and the command's limit.
-Result checkFsRequest(Handle process, const RoProcessMemoryRequest& request, u64 limit, u64 capacity) {
+/// Checks that @p process is FS with the requested process ID.
+Result checkFsProcess(Handle process, const RoProcessMemoryRequest& request) {
     u64 process_id = 0;
     u64 program_id = 0;
     Result rc = svcGetProcessId(&process_id, process);
@@ -26,10 +28,58 @@ Result checkFsRequest(Handle process, const RoProcessMemoryRequest& request, u64
     if (R_FAILED(rc))
         return rc;
 
-    if (program_id != FilesystemProgramId || request.process_id != process_id || !request.size ||
-        request.size > limit || request.size > capacity || request.address > UINT64_MAX - request.size)
+    if (program_id != FilesystemProgramId || request.process_id != process_id)
         return RoResult_BadRequest;
     return 0;
+}
+
+/// Checks that @p process is FS with the requested process ID, and that the
+/// range fits the caller's buffer and the command's limit.
+Result checkFsRequest(Handle process, const RoProcessMemoryRequest& request, u64 limit, u64 capacity) {
+    Result rc = checkFsProcess(process, request);
+    if (R_FAILED(rc))
+        return rc;
+
+    if (!request.size || request.size > limit || request.size > capacity ||
+        request.address > UINT64_MAX - request.size)
+        return RoResult_BadRequest;
+    return 0;
+}
+
+/// Finds the first block of writable mutable code that can hold @p request.size
+/// bytes. HEN writes hook trampolines there.
+Result findWritableCode(Handle process, const RoProcessMemoryRequest& request,
+                        RoProcessMemoryRegion* out) {
+    Result rc = checkFsRequest(process, request, MaximumArenaSize, request.size);
+    if (R_FAILED(rc))
+        return rc;
+
+    u64 begin = 0;
+    u64 size = 0;
+    if (R_FAILED(svcGetInfo(&begin, InfoType_AslrRegionAddress, process, 0)) ||
+        R_FAILED(svcGetInfo(&size, InfoType_AslrRegionSize, process, 0)) ||
+        !size || begin > UINT64_MAX - size)
+        return RoResult_BadRequest;
+    const u64 end = begin + size;
+
+    for (u32 block = 0; block < MaxScanBlocks && begin < end; block++) {
+        MemoryInfo info = {};
+        u32 page = 0;
+        rc = svcQueryProcessMemory(&info, &page, process, begin);
+        if (R_FAILED(rc))
+            return rc;
+        if (!info.size || info.addr > UINT64_MAX - info.size ||
+            info.addr + info.size <= begin)
+            return RoResult_BadRequest;
+
+        if (info.type == MemType_CodeMutable && (info.perm & Perm_W) && !info.attr &&
+            info.size >= request.size) {
+            *out = {info.addr, info.size, info.type, info.perm, info.attr, 0};
+            return 0;
+        }
+        begin = info.addr + info.size;
+    }
+    return RoResult_OutOfAddressSpace;
 }
 
 /// Checks that the range lies in one block of FS code memory: static or
@@ -108,6 +158,9 @@ Result writeFsMemory(Handle process, const RoProcessMemoryRequest& request, cons
 
     std::memcpy(range.bytes, input, request.size);
     armDCacheFlush(range.bytes, request.size);
+    // FS fetches these bytes as instructions. Invalidate the instruction
+    // cache through RO's mapping too, so a patched entry is not left stale.
+    armICacheInvalidate(range.bytes, request.size);
     return unmapRange(process, range);
 }
 
@@ -150,7 +203,8 @@ bool serveDiagnostics(void* message, const HipcParsedRequest& request) {
     return true;
 }
 
-/// Runs a read or write request, or returns RoResult_BadRequest for any other.
+/// Runs a read, write or find-code request, or returns RoResult_BadRequest
+/// for any other.
 Result runMemoryCommand(void* message, const HipcParsedRequest& request) {
     const CmifInHeader* header = getHeader(message, request, sizeof(RoProcessMemoryRequest));
     if (!header || header->magic != CMIF_IN_HEADER_MAGIC)
@@ -158,7 +212,9 @@ Result runMemoryCommand(void* message, const HipcParsedRequest& request) {
 
     const bool read = header->command_id == RoProcessReadCommand;
     const bool write = header->command_id == RoProcessWriteCommand;
-    if ((!read && !write) || !hasShape(request, 1, write ? 1 : 0, read ? 1 : 0))
+    const bool find = header->command_id == RoProcessFindCodeCommand;
+    if ((!read && !write && !find) ||
+        !hasShape(request, 1, write ? 1 : 0, (read || find) ? 1 : 0))
         return RoResult_BadRequest;
 
     const Handle process = request.data.copy_handles[0];
@@ -171,8 +227,20 @@ Result runMemoryCommand(void* message, const HipcParsedRequest& request) {
         return readFsMemory(process, args, hipcGetBufferAddress(&request.data.recv_buffers[0]),
                             hipcGetBufferSize(&request.data.recv_buffers[0]));
     }
-    return writeFsMemory(process, args, hipcGetBufferAddress(&request.data.send_buffers[0]),
-                         hipcGetBufferSize(&request.data.send_buffers[0]));
+    if (write) {
+        return writeFsMemory(process, args, hipcGetBufferAddress(&request.data.send_buffers[0]),
+                             hipcGetBufferSize(&request.data.send_buffers[0]));
+    }
+
+    RoProcessMemoryRegion region = {};
+    Result rc = findWritableCode(process, args, &region);
+    void* output = hipcGetBufferAddress(&request.data.recv_buffers[0]);
+    const u64 capacity = hipcGetBufferSize(&request.data.recv_buffers[0]);
+    if (R_SUCCEEDED(rc) && (!output || capacity < sizeof(region)))
+        rc = RoResult_BadRequest;
+    if (R_SUCCEEDED(rc))
+        std::memcpy(output, &region, sizeof(region));
+    return rc;
 }
 
 void closeRequestHandles(const HipcParsedRequest& request) {

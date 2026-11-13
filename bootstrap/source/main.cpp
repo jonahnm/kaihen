@@ -299,7 +299,8 @@ static void _launchPublishPlugin(LaunchState* args, Handle control_session) {
 /// ready. Both sessions are the plugin's own, from HEN: a session on HEN's
 /// SM proxy and a clone of HEN's FS root. FS's SM session and the FS root
 /// itself stay with HEN and the bootstrap, so that a plugin cannot close
-/// them for everyone.
+/// them for everyone. A third session, when HEN can create one, is the
+/// plugin-only interface for HEN's FS hooks; a plugin can start without it.
 static void _launchHandOffToPlugin(LaunchState* args, Handle plugin_handle) {
     args->mark(BootstrapOperation_PluginHandoff);
     Handle ready_read = INVALID_HANDLE;
@@ -307,23 +308,28 @@ static void _launchHandOffToPlugin(LaunchState* args, Handle plugin_handle) {
     Handle control_session = INVALID_HANDLE;
     Handle sm_session = INVALID_HANDLE;
     Handle fs_root = INVALID_HANDLE;
+    Handle hook_session = INVALID_HANDLE;
     Service hen = {};
     serviceCreate(&hen, args->hen_session);
     args->result = henCreateServiceManagerSession(&hen, &sm_session);
     if (R_SUCCEEDED(args->result))
         args->result = henCloneFilesystemRoot(&hen, &fs_root);
     if (R_SUCCEEDED(args->result)) {
+        // The hook interface is optional: a plugin still starts without it.
+        henCreatePluginSession(&hen, &hook_session);
         Service service = {};
         serviceCreate(&service, plugin_handle);
         args->result = pluginAdoptHandles(&service, sm_session, fs_root,
-                                          &release_write, &ready_read,
-                                          &control_session);
+                                          hook_session, &release_write,
+                                          &ready_read, &control_session);
     }
-    // The plugin has its copies of both sessions now.
+    // The plugin has its copies of the sessions now.
     if (sm_session != INVALID_HANDLE)
         svcCloseHandle(sm_session);
     if (fs_root != INVALID_HANDLE)
         svcCloseHandle(fs_root);
+    if (hook_session != INVALID_HANDLE)
+        svcCloseHandle(hook_session);
     svcCloseHandle(plugin_handle);
     if (R_FAILED(args->result))
         return;

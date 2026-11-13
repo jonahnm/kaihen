@@ -3,6 +3,8 @@
 
 #include <switch.h>
 #include "../../common/control.h"
+#include "fs_hook.hpp"
+#include "fs_hook_memory.hpp"
 #include "game_arm.hpp"
 #include "sm_proxy.hpp"
 #include "../../libkaihen/source/cmif_server.hpp"
@@ -32,6 +34,7 @@ class HenServer {
     enum class SessionKind {
         Control,  ///< A session on mig:usr.
         Homebrew, ///< A session from CreateHomebrewSession.
+        Plugin,   ///< A plugin's session from CreatePluginSession: FS hooks only.
     };
 
     struct SessionRef {
@@ -42,8 +45,8 @@ class HenServer {
     /// The sessions that the loop waits on, and the port before them while
     /// HEN has it.
     struct WaitList {
-        Handle handles[1 + 2 * MaxSessions];
-        SessionRef sessions[1 + 2 * MaxSessions]; ///< sessions[i] for handles[i], except the port.
+        Handle handles[1 + 3 * MaxSessions];
+        SessionRef sessions[1 + 3 * MaxSessions]; ///< sessions[i] for handles[i], except the port.
         s32 count;
         s32 port_index; ///< -1 once the port is released.
     };
@@ -99,6 +102,7 @@ class HenServer {
     CommandReply serveRequest(const ReceivedRequest& request, SessionRef session);
     void serveControlCommand(const ReceivedRequest& request, CommandReply& reply);
     void serveHomebrewCommand(const ReceivedRequest& request, u32 index, CommandReply& reply);
+    void servePluginCommand(const ReceivedRequest& request, CommandReply& reply);
 
     // Control commands
     Result startGameArm(Handle bootstrap_process);
@@ -106,12 +110,16 @@ class HenServer {
     Result adoptFilesystemRoot(Handle copied_root);
     Result adoptServiceManager(Handle copied_session);
     Result adoptPlugin(const HenPluginRecord& plugin, Handle control_session);
+    Result createPluginSession(Handle* out_client);
     Result releaseControlPort();
 
     // Homebrew commands
     Result openPlugin(const HenPluginName& name, Handle* out_session);
     void removePlugin(u32 index);
     void removeExitedPlugins();
+
+    // Plugin commands
+    Result installFsHook(const HenFsHookRequest& request, HenFsHookInfo* out);
 
     Handle port_ = INVALID_HANDLE;
     Handle fs_root_ = INVALID_HANDLE;
@@ -123,8 +131,11 @@ class HenServer {
     Handle sessions_[MaxSessions] = {};
     Handle homebrew_sessions_[MaxSessions] = {};
     Handle homebrew_processes_[MaxSessions] = {};
+    Handle plugin_sessions_[MaxSessions] = {};
     PluginRecord plugins_[HEN_MAX_PLUGINS] = {};
     u32 plugin_count_ = 0;
     HenStatus status_ = {};
     GameArm game_ = {};
+    FsHookManager fs_hooks_ = {};
+    FsHookMemory fs_hook_memory_ = {};
 };
