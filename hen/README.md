@@ -42,16 +42,32 @@ change the process identity that FS uses for every holder of the root.
 
 HEN gives each plugin a session of its own for FS hooks, created by
 `CreatePluginSession` during the bootstrap's handoff. The homebrew sessions
-never serve those commands. HEN builds AArch64 inline hooks
-(`source/inline_hook.cpp`): the patched entry branches to the plugin's
-replacement, and a trampoline keeps the overwritten prologue executable.
-Targets and replacements are offsets from the FS module base; a BTI landing
-pad stays in place, and the trampoline runs the original PAC prologue. The
-patch and trampoline are written to FS through RO's `ro:dmnt` endpoint; a
-trampoline arena comes from
-RO's writable-code lookup, and its module base comes from RO's image-base
-lookup. HEN uses the FS process handle that `AdoptGameHandles1` brings, and
-hook targets and replacements are offsets from that module base.
+never serve those commands. The plugin also creates a callback session pair;
+the bootstrap takes a copy of its client end with the handoff's
+`GetHookSession` command and gives it to HEN with `AdoptPluginHooks`.
+
+FS and the plugin are separate processes, so the FS function cannot branch
+directly into plugin code. HEN writes a small AArch64 bridge stub into FS
+instead (`source/fs_hook_stub.cpp`). The patched entry branches to the stub;
+the stub sends a TIPC call on the named port `kaih:fs`
+(`source/server.cpp`), and HEN invokes the plugin's handler on the callback
+session. The handler receives x0-x8 in a `HenFsHookContext`.
+
+A handler can return `HEN_FS_HOOK_CALL_ORIGINAL` in the BEFORE phase. HEN
+answers with that action, and the stub calls the existing trampoline with
+`BLR`: the trampoline runs the overwritten prologue and branches back into
+the target, and the target's normal return goes to the stub because `BLR`
+set x30. The stub then sends the AFTER event with the original result, and
+the handler may replace those registers. This is how an original call works
+across the process boundary, without moving plugin code into FS.
+
+The bridge slot is 1 KiB: stub code and parameters, then the trampoline.
+Sixteen slots fill RO's 0x4000-byte writable-code arena. The patch and
+stub are written to FS through RO's `ro:dmnt` endpoint; the arena and module
+base come from RO's writable-code and image-base lookups. HEN uses the FS
+process handle that `AdoptGameHandles1` brings. If the named port cannot be
+created, HEN still starts, but a hook install returns
+`LibnxError_NotInitialized`.
 
 ## SM proxy
 

@@ -7,12 +7,15 @@
 // provided one. The reply has the runtime version (PluginRuntimeVersion) and
 // three handles: a release event, a ready event and the client end of the
 // plugin's control session, or INVALID_HANDLE for a plugin without a service.
-// Once the bootstrap has the reply it signals the release event, and the
-// plugin unregisters mig:usr. Then the plugin installs the SM session and FS
-// root as its services.
+//
+// The plugin also creates a callback session pair. Its server end serves FS
+// hook events; the bootstrap asks for a copy of the client end with
+// GetHookSession and gives it to HEN. The bootstrap signals the release event
+// only after that, which is why the plugin keeps serving mig:usr until then.
 #include <switch.h>
 
 #include "../include/kaihen/plugin.h"
+#include "plugin_hook.hpp"
 #include "plugin_startup.h"
 #include "cmif_server.hpp"
 
@@ -30,12 +33,14 @@ using ounce::closeHandle;
 
 constexpr u32 MigrationServiceSpace = 1;
 constexpr u64 ReleaseTimeoutNs = 5000000000ull;
+constexpr u32 MaxInstalledHooks = HEN_MAX_PLUGINS;
 
 /// The handles that the plugin keeps from the bootstrap's AdoptHandles.
 struct ReceivedHandles {
     Handle sm_session = INVALID_HANDLE;
     Handle fs_root = INVALID_HANDLE;
     Handle hook_session = INVALID_HANDLE;    ///< HEN's plugin-only FS hook interface.
+    Handle callback_server = INVALID_HANDLE; ///< The plugin's end of the handler callback pair.
     Handle ready_event = INVALID_HANDLE;     ///< Writable end; the plugin signals it.
     Handle control_session = INVALID_HANDLE; ///< Server end, when the plugin publishes a service.
 };
@@ -54,13 +59,23 @@ struct AdoptReply {
     }
 };
 
+struct InstalledHook {
+    u32 id = 0;
+    u32 handler_id = 0;
+};
+
 ReceivedHandles g_received;
+Handle g_hook_client = INVALID_HANDLE;
+InstalledHook g_installed[MaxInstalledHooks] = {};
+u32 g_installed_count = 0;
 bool g_publish_service = false;
 bool g_initialized = false;
 
 void closeReceivedHandles() {
     closeHandle(&g_received.control_session);
     closeHandle(&g_received.hook_session);
+    closeHandle(&g_received.callback_server);
+    closeHandle(&g_hook_client);
     closeHandle(&g_received.ready_event);
     closeHandle(&g_received.fs_root);
     closeHandle(&g_received.sm_session);
@@ -74,9 +89,15 @@ bool isAdoptHandles(const ounce::CmifRequest& request) {
         !meta.num_move_handles;
 }
 
-/// Creates the events and the control session that the AdoptHandles reply
-/// returns. The plugin keeps one end of each, and `release_event` receives
-/// the readable end of the release event.
+bool isGetHookSession(const ounce::CmifRequest& request) {
+    return request.valid && request.hipc.meta.type == CmifCommandType_Request &&
+        request.command_id == PluginStartupCommand_GetHookSession &&
+        ounce::hasOnlyInlineData(request);
+}
+
+/// Creates the events, the control session, and the callback session pair
+/// that the handoff needs. `release_event` receives the readable end; the
+/// plugin keeps the server end of the callback pair in g_received.
 Result createAdoptObjects(AdoptReply* reply, Handle* release_event) {
     Result rc = svcCreateEvent(&reply->release_event, release_event);
     if (R_FAILED(rc))
@@ -91,8 +112,15 @@ Result createAdoptObjects(AdoptReply* reply, Handle* release_event) {
         if (R_FAILED(rc))
             goto fail_ready_event;
     }
+
+    rc = svcCreateSession(&g_received.callback_server, &g_hook_client, false, 0);
+    if (R_FAILED(rc))
+        goto fail_control_session;
     return 0;
 
+fail_control_session:
+    closeHandle(&g_received.control_session);
+    closeHandle(&reply->control_client);
 fail_ready_event:
     closeHandle(&g_received.ready_event);
     closeHandle(&reply->ready_event);
@@ -130,20 +158,31 @@ Result adoptHandles(void* message, const ounce::CmifRequest& request,
     return 0;
 }
 
-/// Serves one request on the mig:usr session. `adopted` is set when it was
-/// AdoptHandles and the plugin now has the bootstrap's handles.
-Result serveBootstrapRequest(Handle session, Handle* release_event, bool* adopted) {
+/// Serves one request on the mig:usr session. After AdoptHandles, the
+/// bootstrap asks for the hook callback client; the runtime keeps serving
+/// until the bootstrap signals release.
+Result serveBootstrapRequest(Handle session, Handle* release_event) {
     void* message = armGetTls();
     const ounce::CmifRequest request = ounce::parseRequest(message);
     AdoptReply reply;
     Result rc;
+    bool sent_hook_client = false;
 
     if (ounce::isQueryPointerBufferSize(request)) {
         ounce::writePointerBufferSizeReply(message);
         rc = 0;
     } else if (isAdoptHandles(request)) {
         rc = adoptHandles(message, request, &reply, release_event);
-        *adopted = R_SUCCEEDED(rc);
+    } else if (isGetHookSession(request)) {
+        if (g_hook_client == INVALID_HANDLE) {
+            rc = MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+            ounce::closeRequestHandles(request);
+            ounce::writeReply(message, rc, nullptr, 0);
+        } else {
+            rc = 0;
+            ounce::writeReply(message, 0, nullptr, 0, &g_hook_client, 1);
+            sent_hook_client = true;
+        }
     } else {
         rc = MAKERESULT(Module_Libnx, LibnxError_BadInput);
         ounce::closeRequestHandles(request);
@@ -152,40 +191,78 @@ Result serveBootstrapRequest(Handle session, Handle* release_event, bool* adopte
 
     const Result send_rc = ounce::sendReply(session);
     reply.close();
+    if (sent_hook_client)
+        closeHandle(&g_hook_client);
     return R_FAILED(send_rc) ? send_rc : rc;
 }
 
 /// Accepts the bootstrap's connection to mig:usr and serves it until the
-/// bootstrap has sent AdoptHandles. The session stays open, so that the
-/// bootstrap can receive the reply; the caller closes it.
-Result receiveBootstrapHandles(Handle port, Handle* out_session, Handle* release_event) {
+/// bootstrap has AdoptHandles, asks for the hook callback client, and
+/// signals release. The caller closes the session and the release event.
+Result receiveBootstrapHandles(Handle port, Handle* out_session,
+                               Handle* out_release_event) {
     Handle session = INVALID_HANDLE;
+    Handle release = INVALID_HANDLE;
     for (;;) {
-        const Handle handles[] = {port, session};
-        const s32 count = session == INVALID_HANDLE ? 1 : 2;
+        Handle handles[3] = {port, INVALID_HANDLE, INVALID_HANDLE};
+        s32 session_index = -1;
+        s32 release_index = -1;
+        s32 count = 1;
+        if (session != INVALID_HANDLE) {
+            session_index = count;
+            handles[count++] = session;
+        }
+        if (release != INVALID_HANDLE) {
+            release_index = count;
+            handles[count++] = release;
+        }
+
         s32 index = -1;
-        Result rc = svcReplyAndReceive(&index, handles, count, INVALID_HANDLE, UINT64_MAX);
-        if (R_FAILED(rc))
+        const u64 timeout = release != INVALID_HANDLE ? ReleaseTimeoutNs : UINT64_MAX;
+        Result rc = svcReplyAndReceive(&index, handles, count, INVALID_HANDLE, timeout);
+        if (R_FAILED(rc)) {
+            // The bootstrap signals release and then closes its end. If the
+            // kernel reports the close first, the handoff still succeeded.
+            if (rc == KERNELRESULT(ConnectionClosed) && release != INVALID_HANDLE &&
+                R_SUCCEEDED(svcWaitSynchronizationSingle(release, ReleaseTimeoutNs))) {
+                *out_session = session;
+                *out_release_event = release;
+                return 0;
+            }
+            *out_session = session;
+            *out_release_event = release;
             return rc;
+        }
 
         if (index == 0) {
             rc = svcAcceptSession(&session, port);
-            if (R_FAILED(rc))
+            if (R_FAILED(rc)) {
+                *out_session = session;
+                *out_release_event = release;
                 return rc;
+            }
             continue;
         }
 
-        bool adopted = false;
-        rc = serveBootstrapRequest(session, release_event, &adopted);
-        if (R_FAILED(rc) || adopted) {
+        if (index == release_index) {
             *out_session = session;
-            return rc;
+            *out_release_event = release;
+            return 0;
+        }
+
+        if (index == session_index) {
+            rc = serveBootstrapRequest(session, &release);
+            if (R_FAILED(rc)) {
+                *out_session = session;
+                *out_release_event = release;
+                return rc;
+            }
         }
     }
 }
 
 /// Registers mig:usr, receives the bootstrap's handles, and unregisters
-/// mig:usr once the bootstrap signals that it has the reply.
+/// mig:usr once the bootstrap signals that it has them.
 Result receiveThroughMigrationService() {
     Handle port = INVALID_HANDLE;
     Result rc = smRegisterServiceInSpace(&port, MigrationServiceSpace,
@@ -196,8 +273,6 @@ Result receiveThroughMigrationService() {
     Handle session = INVALID_HANDLE;
     Handle release_event = INVALID_HANDLE;
     rc = receiveBootstrapHandles(port, &session, &release_event);
-    if (R_SUCCEEDED(rc))
-        rc = svcWaitSynchronizationSingle(release_event, ReleaseTimeoutNs);
     closeHandle(&session);
     closeHandle(&release_event);
 
@@ -208,15 +283,36 @@ Result receiveThroughMigrationService() {
 }
 
 /// Installs the bootstrap's SM session and FS root for later service use.
+/// The hook callback thread is optional: a plugin without a working thread
+/// still runs, but its hook install API returns NotInitialized.
 Result installReceivedServices() {
     smAddOverrideHandle(smEncodeName("sm:"), g_received.sm_session);
     smAddOverrideHandle(smEncodeName("fsp-srv"), g_received.fs_root);
-    return smInitialize();
+    Result rc = smInitialize();
+    if (R_FAILED(rc))
+        return rc;
+
+    if (R_FAILED(kaihen::StartHookServer(g_received.callback_server))) {
+        closeHandle(&g_received.callback_server);
+        closeHandle(&g_hook_client);
+    }
+    return 0;
+}
+
+InstalledHook* findInstalledHook(u32 id) {
+    for (u32 index = 0; index < g_installed_count; index++) {
+        if (g_installed[index].id == id)
+            return &g_installed[index];
+    }
+    return nullptr;
 }
 
 } // namespace
 
 Result pluginRuntimeInitialize(Handle* out_ready_event) {
+    if (!out_ready_event)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+
     Result rc = smInitialize();
     if (R_FAILED(rc))
         return rc;
@@ -252,25 +348,53 @@ Result openHookService(Service* out) {
 
 } // namespace
 
-Result pluginFsHookInstall(u64 target_offset, u64 replacement_offset,
-                           HenFsHookInfo* out) {
-    if (!out)
+Result pluginFsHookInstall(u64 target_offset, HenFsHookHandler handler,
+                           void* user, HenFsHookInfo* out) {
+    if (!out || !handler)
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    if (!kaihen::HookServerRunning())
+        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+    if (g_installed_count == MaxInstalledHooks)
+        return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
+
+    u32 handler_id = 0;
+    Result rc = kaihen::RegisterHookHandler(handler, user, &handler_id);
+    if (R_FAILED(rc))
+        return rc;
+
     Service hook = {};
-    Result rc = openHookService(&hook);
+    rc = openHookService(&hook);
     if (R_SUCCEEDED(rc)) {
-        const HenFsHookRequest request = {target_offset, replacement_offset, 0, 0};
+        const HenFsHookRequest request = {target_offset, handler_id, 0, 0};
         rc = serviceDispatchInOut(&hook, HenPluginCommand_InstallFsHook, request, *out);
     }
-    return rc;
+    if (R_FAILED(rc)) {
+        kaihen::UnregisterHookHandler(handler_id);
+        return rc;
+    }
+
+    g_installed[g_installed_count++] = {out->id, handler_id};
+    return 0;
 }
 
 Result pluginFsHookRemove(u32 id) {
+    InstalledHook* installed = findInstalledHook(id);
+    if (!installed)
+        return MAKERESULT(Module_Libnx, LibnxError_NotFound);
+
     Service hook = {};
     Result rc = openHookService(&hook);
     if (R_SUCCEEDED(rc))
         rc = serviceDispatchIn(&hook, HenPluginCommand_RemoveFsHook, id);
-    return rc;
+    if (R_FAILED(rc))
+        return rc;
+
+    const u32 index = static_cast<u32>(installed - g_installed);
+    kaihen::UnregisterHookHandler(installed->handler_id);
+    for (u32 next = index; next + 1 < g_installed_count; next++)
+        g_installed[next] = g_installed[next + 1];
+    g_installed[--g_installed_count] = {};
+    return 0;
 }
 
 Result pluginFsHookCount(u32* out_count) {
@@ -295,6 +419,8 @@ Result pluginFsHookInfo(u32 index, HenFsHookInfo* out) {
 
 Result pluginRuntimeInitializeWithService(Handle* out_ready_event,
                                           Handle* out_control_session) {
+    if (!out_control_session)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
     g_publish_service = true;
     Result rc = pluginRuntimeInitialize(out_ready_event);
     if (R_SUCCEEDED(rc))
@@ -305,6 +431,7 @@ Result pluginRuntimeInitializeWithService(Handle* out_ready_event,
 }
 
 void pluginRuntimeExit(void) {
+    kaihen::StopHookServer();
     if (g_initialized) {
         smExit();
         g_initialized = false;

@@ -49,26 +49,23 @@ const FsHookManager::Entry* FsHookManager::find(u32 id) const {
 }
 
 Result FsHookManager::install(const HenFsHookRequest& request, u64 module_base,
-                              HenFsHookInfo* out) {
+                              u32 owner, HenFsHookInfo* out) {
     R_UNLESS(out, BadInput);
     R_UNLESS(hasBackend(backend_), NotInitialized);
-    R_UNLESS(module_base, BadInput);
+    R_UNLESS(module_base && owner && request.handler_id, BadInput);
     R_UNLESS(request.flags == 0, BadInput);
     R_UNLESS(count_ < MaxHooks, OutOfMemory);
-    R_UNLESS(request.target_offset <= UINT64_MAX - module_base &&
-             request.replacement_offset <= UINT64_MAX - module_base,
-             BadInput);
+    R_UNLESS(request.target_offset <= UINT64_MAX - module_base, BadInput);
 
     const u64 target = hook::StripPac(module_base + request.target_offset);
-    const u64 replacement = hook::StripPac(module_base + request.replacement_offset);
-    R_UNLESS(target && replacement && !(target & 3) && !(replacement & 3), BadInput);
+    R_UNLESS(target && !(target & 3), BadInput);
     for (u32 index = 0; index < count_; index++) {
         if (entries_[index].info.target == target)
             return AlreadyInstalled;
     }
 
     u64 slot = 0;
-    R_TRY(backend_.allocate(backend_.context, hook::TrampolineCapacity, &slot));
+    R_TRY(backend_.allocate(backend_.context, hook::StubSlotSize, &slot));
     R_UNLESS(slot && !(slot & 3), BadInput);
 
     u8 code[hook::MaxReadSize] = {};
@@ -79,18 +76,29 @@ Result FsHookManager::install(const HenFsHookRequest& request, u64 module_base,
         rc = backend_.read(backend_.context, target, code, hook::MaxPatchSize);
     hook::Plan plan;
     if (R_SUCCEEDED(rc)) {
-        const hook::Status status = hook::Build(target, replacement, slot, code,
-                                                sizeof(code), &plan);
+        const hook::Status status = hook::Build(target, slot, slot + hook::StubTrampolineOffset,
+                                                code, sizeof(code), &plan);
         rc = translate(status);
     }
     if (R_FAILED(rc)) {
         if (backend_.release)
-            backend_.release(backend_.context, slot, hook::TrampolineCapacity);
+            backend_.release(backend_.context, slot, hook::StubSlotSize);
         return rc;
     }
 
-    rc = backend_.write(backend_.context, plan.trampoline,
-                        plan.trampoline_bytes, plan.trampoline_size);
+    u8 stub[hook::StubSize] = {};
+    uint32_t id = next_id_;
+    if (!hook::BuildStub(id, plan.trampoline, stub, sizeof(stub))) {
+        if (backend_.release)
+            backend_.release(backend_.context, slot, hook::StubSlotSize);
+        return OutOfMemory;
+    }
+
+    rc = backend_.write(backend_.context, slot, stub, sizeof(stub));
+    if (R_SUCCEEDED(rc)) {
+        rc = backend_.write(backend_.context, plan.trampoline,
+                            plan.trampoline_bytes, plan.trampoline_size);
+    }
     bool patched = false;
     if (R_SUCCEEDED(rc)) {
         rc = backend_.replace(backend_.context, plan.entry,
@@ -113,7 +121,7 @@ Result FsHookManager::install(const HenFsHookRequest& request, u64 module_base,
                              plan.original_bytes, plan.patch_size);
         }
         if (backend_.release)
-            backend_.release(backend_.context, slot, hook::TrampolineCapacity);
+            backend_.release(backend_.context, slot, hook::StubSlotSize);
         return rc;
     }
 
@@ -124,11 +132,14 @@ Result FsHookManager::install(const HenFsHookRequest& request, u64 module_base,
         next_id_ = 1;
     entry.info.state = HEN_FS_HOOK_INSTALLED;
     entry.info.target = plan.target;
-    entry.info.replacement = plan.replacement;
+    entry.info.replacement = slot;
     entry.info.trampoline = plan.trampoline;
     entry.entry = plan.entry;
     entry.slot = slot;
-    entry.slot_size = hook::TrampolineCapacity;
+    entry.trampoline = plan.trampoline;
+    entry.slot_size = hook::StubSlotSize;
+    entry.owner = owner;
+    entry.handler_id = request.handler_id;
     entry.patch_size = plan.patch_size;
     std::memcpy(entry.patch, plan.patch_bytes, plan.patch_size);
     std::memcpy(entry.original, plan.original_bytes, plan.patch_size);
@@ -157,6 +168,15 @@ Result FsHookManager::info(u32 index, HenFsHookInfo* out) const {
     R_UNLESS(out, BadInput);
     R_UNLESS(index < count_, NotFound);
     *out = entries_[index].info;
+    return 0;
+}
+
+Result FsHookManager::callInfo(u32 id, u32* out_owner, u32* out_handler_id) const {
+    R_UNLESS(out_owner && out_handler_id, BadInput);
+    const Entry* entry = find(id);
+    R_UNLESS(entry, NotFound);
+    *out_owner = entry->owner;
+    *out_handler_id = entry->handler_id;
     return 0;
 }
 

@@ -9,6 +9,7 @@
 #include <switch/types.h>
 
 #include "../../libkaihen/include/kaihen/hook.h"
+#include "fs_hook_stub.hpp"
 #include "inline_hook.hpp"
 
 namespace ounce {
@@ -37,10 +38,14 @@ class FsHookManager {
 
     void setBackend(const FsHookBackend& backend) { backend_ = backend; }
 
-    /// Installs a hook at request.target_offset from @p module_base, branching
-    /// to request.replacement_offset from the same base.
-    Result install(const HenFsHookRequest& request, u64 module_base,
+    /// Installs a hook at request.target_offset from @p module_base. The
+    /// target branches to a bridge stub; @p owner is the plugin record token
+    /// that the handler is registered under.
+    Result install(const HenFsHookRequest& request, u64 module_base, u32 owner,
                    HenFsHookInfo* out);
+
+    /// Finds the plugin owner and handler ID of an installed hook.
+    Result callInfo(u32 id, u32* out_owner, u32* out_handler_id) const;
 
     /// Restores the target's original instructions and frees its trampoline.
     Result remove(u32 id);
@@ -54,8 +59,11 @@ class FsHookManager {
     struct Entry {
         HenFsHookInfo info = {};
         u64 entry = 0;       ///< target, or the first instruction after its BTI.
-        u64 slot = 0;        ///< The trampoline's address in the hook arena.
+        u64 slot = 0;        ///< The bridge stub's address in the hook arena.
+        u64 trampoline = 0;  ///< slot + hook::StubTrampolineOffset.
         u32 slot_size = 0;
+        u32 owner = 0;       ///< The plugin record token.
+        u32 handler_id = 0;  ///< The plugin runtime's handler ID.
         u32 patch_size = 0;
         u8 patch[hook::MaxPatchSize] = {};
         u8 original[hook::MaxPatchSize] = {};

@@ -31,7 +31,7 @@ class FsHookMemory {
     }
 
   private:
-    static constexpr u32 SlotSize = hook::TrampolineCapacity;
+    static constexpr u32 SlotSize = hook::StubSlotSize;
     static constexpr u32 MaxSlots = FsHookManager::MaxHooks;
 
     static Result Read(void* context, u64 address, void* out, u32 size) {

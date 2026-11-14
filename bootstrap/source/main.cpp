@@ -309,6 +309,9 @@ static void _launchHandOffToPlugin(LaunchState* args, Handle plugin_handle) {
     Handle sm_session = INVALID_HANDLE;
     Handle fs_root = INVALID_HANDLE;
     Handle hook_session = INVALID_HANDLE;
+    Handle hook_callback = INVALID_HANDLE;
+    u32 runtime_version = 0;
+    const HenPluginRecord record = {args->current_plugin, args->pm.pid};
     Service hen = {};
     serviceCreate(&hen, args->hen_session);
     args->result = henCreateServiceManagerSession(&hen, &sm_session);
@@ -316,26 +319,42 @@ static void _launchHandOffToPlugin(LaunchState* args, Handle plugin_handle) {
         args->result = henCloneFilesystemRoot(&hen, &fs_root);
     if (R_SUCCEEDED(args->result)) {
         // The hook interface is optional: a plugin still starts without it.
-        henCreatePluginSession(&hen, &hook_session);
+        henCreatePluginSession(&hen, &record, &hook_session);
         Service service = {};
         serviceCreate(&service, plugin_handle);
         args->result = pluginAdoptHandles(&service, sm_session, fs_root,
-                                          hook_session, &release_write,
-                                          &ready_read, &control_session);
+                                          hook_session, &runtime_version,
+                                          &release_write, &ready_read,
+                                          &control_session);
+        // A runtime 4 plugin created a callback session pair. Give HEN the
+        // client copy before releasing the handoff, so that it can call the
+        // handler for every bridge-stub request.
+        if (R_SUCCEEDED(args->result) && runtime_version >= 4 &&
+            hook_session != INVALID_HANDLE) {
+            Result hook_rc = pluginGetHookSession(&service, &hook_callback);
+            if (R_SUCCEEDED(hook_rc)) {
+                hook_rc = henAdoptPluginHooks(&hen, &record, hook_callback);
+                svcCloseHandle(hook_callback);
+            }
+        }
     }
-    // The plugin has its copies of the sessions now.
+    // The plugin has its copies of the sessions now. Signal release while the
+    // mig:usr session is still open: the plugin serves GetHookSession and
+    // then waits for this event on that session. Closing the session first
+    // would look like a failed handoff.
     if (sm_session != INVALID_HANDLE)
         svcCloseHandle(sm_session);
     if (fs_root != INVALID_HANDLE)
         svcCloseHandle(fs_root);
     if (hook_session != INVALID_HANDLE)
         svcCloseHandle(hook_session);
+    if (R_SUCCEEDED(args->result))
+        args->result = svcSignalEvent(release_write);
     svcCloseHandle(plugin_handle);
     if (R_FAILED(args->result))
         return;
 
     args->mark(BootstrapOperation_PluginReady);
-    args->result = svcSignalEvent(release_write);
     Result ready_result = 0;
     if (R_SUCCEEDED(args->result))
         ready_result = svcWaitSynchronizationSingle(ready_read, PluginReadyTimeoutNs);

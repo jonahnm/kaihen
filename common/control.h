@@ -21,6 +21,7 @@ enum HenControlCommand {
     HenControlCommand_CreateServiceManagerSession = 14,
     HenControlCommand_CloneFilesystemRoot = 15,
     HenControlCommand_CreatePluginSession = 16,
+    HenControlCommand_AdoptPluginHooks = 17,
 };
 
 
@@ -102,6 +103,15 @@ NX_INLINE Result henAdoptPlugin(Service* s, const HenPluginRecord* plugin, Handl
         .in_handles = {control_session});
 }
 
+/// Give HEN a COPY of a plugin's hook callback client session. The caller
+/// owns the handle it passes and may close it after the call.
+NX_INLINE Result henAdoptPluginHooks(Service* s, const HenPluginRecord* plugin,
+                                     Handle hook_session) {
+    return serviceDispatchIn(s, HenControlCommand_AdoptPluginHooks, *plugin,
+        .in_num_handles = 1,
+        .in_handles = {hook_session});
+}
+
 /// Unregister mig:usr and close HEN's port. The sessions already open stay.
 /// The bootstrap calls it once it is connected, so that each plugin can
 /// register mig:usr for its own handoff.
@@ -125,11 +135,14 @@ NX_INLINE Result henCloneFilesystemRoot(Service* s, Handle* out) {
     );
 }
 
-/// Get a new plugin session for HEN's FS hook interface. The bootstrap gives
-/// the client end to a plugin during its handoff; only plugin sessions can
-/// install FS hooks. The caller owns the handle.
-NX_INLINE Result henCreatePluginSession(Service* s, Handle* out) {
-    return serviceDispatch(s, HenControlCommand_CreatePluginSession,
+/// Get a new plugin session for HEN's FS hook interface. The record tells
+/// HEN which plugin owns the session, so an installed hook can call that
+/// plugin's handler. The bootstrap gives the client end to the plugin during
+/// its handoff; only plugin sessions can install FS hooks. The caller owns
+/// the handle.
+NX_INLINE Result henCreatePluginSession(Service* s, const HenPluginRecord* plugin,
+                                        Handle* out) {
+    return serviceDispatchIn(s, HenControlCommand_CreatePluginSession, *plugin,
         .out_handle_attrs = { SfOutHandleAttr_HipcCopy },
         .out_handles = out,
     );

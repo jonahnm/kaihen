@@ -40,7 +40,7 @@ $(OUT)/libkaihen.a: | $(OUT)
 $(OUT)/plugin_%.o: source/plugin_%.cpp | $(OUT)
 	$(TOOLS)g++ $(CXXFLAGS) -c $< -o $@
 
-$(OUT)/libkaihen_plugin.a: $(OUT)/plugin_runtime.o $(OUT)/plugin_server.o
+$(OUT)/libkaihen_plugin.a: $(OUT)/plugin_runtime.o $(OUT)/plugin_server.o $(OUT)/plugin_hook.o
 	rm -f $@
 	$(TOOLS)ar rcs $@ $^
 

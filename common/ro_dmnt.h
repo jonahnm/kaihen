@@ -8,9 +8,9 @@
 // the FS process handle in the request; RO checks that it is FS and that the
 // range is FS code memory.
 constexpr u32 RoProcessReadCommand = 0x524f0016;     ///< Out buffer: the bytes read, at most 4 MiB.
-constexpr u32 RoProcessWriteCommand = 0x524f0017;    ///< In buffer: the bytes to write, at most 256.
-/// Finds writable mutable code for HEN's hook trampolines. Out buffer:
-/// RoProcessMemoryRegion. The address in the request is unused.
+constexpr u32 RoProcessWriteCommand = 0x524f0017;    ///< In buffer: the bytes to write, at most 4 KiB.
+/// Finds writable mutable code for HEN's hook trampolines and bridge stubs.
+/// Out buffer: RoProcessMemoryRegion. The address in the request is unused.
 /// (0x524f0018 is RO's diagnostics command.)
 constexpr u32 RoProcessFindCodeCommand = 0x524f0019;
 /// Finds FS's module base: its lowest static executable code block. Out

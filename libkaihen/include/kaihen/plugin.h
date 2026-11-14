@@ -137,22 +137,48 @@ Result pluginServiceStop(PluginService* service);
 void pluginRuntimeExit(void);
 
 /**
- * @brief Installs an inline hook in FS.
+ * @brief A function that handles one phase of an FS hook call.
+ * @param context The hook ID, phase, x0-x8, and the user pointer from
+ *        pluginFsHookInstall.
+ * @return 0, or a failure that makes HEN fall back to the original function.
+ * @note In HEN_FS_HOOK_BEFORE, set context->action to
+ *       HEN_FS_HOOK_CALL_ORIGINAL (or call henFsHookCallOriginal) to run the
+ *       original FS function. The function is then called again with phase
+ *       HEN_FS_HOOK_AFTER and the original return registers. A hook that
+ *       returns without requesting the original does not run an AFTER phase.
+ * @note The callback runs on the plugin's hook thread. It may make IPC calls,
+ *       but it must not block forever: FS waits for it. Do not install or
+ *       remove a hook from a handler: HEN is waiting for that handler's
+ *       reply while it holds the hook session.
+ */
+typedef Result (*HenFsHookHandler)(HenFsHookContext* context);
+
+/// Sets context->action so that HEN runs the original FS function next.
+static inline void henFsHookCallOriginal(HenFsHookContext* context) {
+    context->action = HEN_FS_HOOK_CALL_ORIGINAL;
+}
+
+/**
+ * @brief Installs an FS inline hook whose handler runs in this plugin.
  * @param target_offset The FS function entry's offset from the base of the
- *        FS module.
- * @param replacement_offset The existing FS code's offset from the base of
- *        the FS module. A replacement farther than 128 MiB from the target
- *        is reached indirectly and must start with a BTI landing pad.
- * @param[out] out The installed hook, including the trampoline that runs the
- *        original prologue and jumps back.
+ *        FS module. HEN keeps a BTI landing pad and builds a trampoline for
+ *        the original prologue.
+ * @param handler The BEFORE and AFTER handler function. It is registered in
+ *        this plugin and is never an address in the FS process.
+ * @param user Passed to the handler through context->user. May be NULL.
+ * @param[out] out The installed hook. info.trampoline runs the original
+ *        prologue and jumps back; the bridge stub uses it for an original
+ *        call. info.replacement is the HEN-owned bridge stub in FS.
  * @note Only plugins have this interface: HEN serves it on the session that
  *       the bootstrap gives a plugin during its handoff, never on a homebrew
  *       session. HEN needs the FS process handle that the bootstrap adopts
  *       after the plugins start; a call before then returns
  *       LibnxError_NotInitialized.
+ * @note Hooks must be installed after the plugin runtime's hook thread has
+ *       started. The runtime starts it during pluginRuntimeInitialize.
  */
-Result pluginFsHookInstall(u64 target_offset, u64 replacement_offset,
-                           HenFsHookInfo* out);
+Result pluginFsHookInstall(u64 target_offset, HenFsHookHandler handler,
+                           void* user, HenFsHookInfo* out);
 
 /// Restores the original instructions of an installed FS hook.
 Result pluginFsHookRemove(u32 id);

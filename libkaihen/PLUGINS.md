@@ -78,28 +78,39 @@ A plugin also receives a session for HEN's FS hook interface, declared in
 `include/kaihen/hook.h`. It is plugin-only: the bootstrap asks HEN for a
 plugin session during the handoff, and the homebrew interface never serves
 these commands. A plugin that HEN could not give a session keeps running
-without hooks. The handoff carries one more input handle than before;
-rebuild plugins against this runtime, because a runtime built before it
-rejects the three-handle handoff.
+without hooks.
 
-`pluginFsHookInstall(target_offset, replacement_offset, &info)` replaces the
-first instructions of an FS function with a branch to the replacement, and
-writes a trampoline into writable FS code. Both offsets are relative to the
-base of the FS module; HEN resolves them against the FS module base that RO
-finds. It keeps a BTI landing pad at the function entry and copies PAC
-prologues (`PACIASP` and the other SP-based forms) into the trampoline, so
-the function's `AUTIASP` still verifies its link register. A replacement
-farther than 128 MiB from the target is reached with an indirect branch and
-must start with a BTI landing pad. The returned `info.trampoline` runs the
-original prologue and jumps back; `pluginFsHookRemove` restores the original
-instructions.
+FS and the plugin are separate processes, so HEN does not branch from FS
+into plugin code. `pluginFsHookInstall(target_offset, handler, user, &info)`
+patches the FS function to branch to a HEN-owned bridge stub in FS. The stub
+sends a TIPC call to HEN on `kaih:fs`; HEN invokes @p handler on a callback
+session that the plugin runtime created and the bootstrap handed to HEN
+during the handoff. The handler runs in the plugin process.
 
-HEN writes FS code through RO's `ro:dmnt` endpoint, which needs the FS
-process handle that the bootstrap adopts after the plugins start. The same
-endpoint supplies FS's module base for offset resolution. A hook install
-before the FS process is available returns `LibnxError_NotInitialized`.
-Hooks stay installed until removed, including after the plugin's session
-closes.
+`HenFsHookContext` carries the hook ID, phase, user pointer and x0-x8. The
+BEFORE handler can change the arguments and call `henFsHookCallOriginal()`
+(or set `context->action`) to ask for the original function. The stub then
+calls the existing trampoline with `BLR`: the trampoline runs the original
+prologue and branches back to the target, whose normal return goes to the
+stub. The stub sends the AFTER event with the original result, and the AFTER
+handler can change it. A handler that returns without requesting the
+original does not get an AFTER phase.
+
+HEN keeps a BTI landing pad at the function entry and copies PAC prologues
+(`PACIASP` and the other SP-based forms) into the trampoline, so the
+function's `AUTIASP` still verifies its link register. Target offsets are
+relative to the FS module base. The bridge slot is 1 KiB (stub, parameters
+and trampoline); sixteen slots fill RO's 0x4000-byte arena. HEN writes FS
+code through RO's `ro:dmnt` endpoint, which needs the FS process handle that
+the bootstrap adopts after the plugins start. A hook install before the FS
+process or the named port is available returns
+`LibnxError_NotInitialized`.
+
+Handlers run on the plugin's hook thread and FS waits for their reply. They
+may make IPC calls, but must not block forever. A failed handler is treated
+as a fallback to the original function. Hooks stay installed until removed,
+including after the plugin process exits; a hook whose plugin is gone also
+falls back to the original.
 
 Plugins link `-lounce_core`, libounce without mimalloc, and keep newlib's
 malloc.

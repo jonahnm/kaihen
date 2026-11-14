@@ -13,7 +13,7 @@ namespace {
 constexpr u64 FilesystemProgramId = 0x0400000000000000ULL;
 constexpr u64 PageSize = 0x1000;
 constexpr u64 MaximumReadSize = 0x400000;
-constexpr u64 MaximumWriteSize = 256;
+constexpr u64 MaximumWriteSize = 0x1000;
 constexpr u64 MaximumArenaSize = 0x4000;
 constexpr u32 MaxScanBlocks = 4096;
 constexpr size_t MessageSize = 0x100;
