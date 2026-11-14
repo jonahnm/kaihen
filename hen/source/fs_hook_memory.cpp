@@ -10,6 +10,7 @@ namespace {
 constexpr Result NotInitialized = MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
 constexpr Result BadInput = MAKERESULT(Module_Libnx, LibnxError_BadInput);
 constexpr Result OutOfMemory = MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
+constexpr u64 ArenaSize = HEN_FS_ARENA_SIZE;
 
 } // namespace
 
@@ -103,45 +104,29 @@ Result FsHookMemory::replace(u64 address, const void* expected,
 }
 
 Result FsHookMemory::allocate(u32 size, u64* out) {
-    R_UNLESS(out && size && size <= SlotSize, BadInput);
+    R_UNLESS(out && size, BadInput);
     R_UNLESS(ready(), NotInitialized);
 
-    if (!arena_) {
-        const RoProcessMemoryRequest request = {
-            process_id_, 0, static_cast<u64>(SlotSize) * MaxSlots, 0};
+    if (!arena_.ready()) {
+        const RoProcessMemoryRequest request = {process_id_, 0, ArenaSize, 0};
         RoProcessMemoryRegion region = {};
         R_TRY(dispatch(RoProcessFindCodeCommand, request, &region, sizeof(region),
                        nullptr, 0));
-        R_UNLESS(region.address && region.size >= static_cast<u64>(SlotSize) * MaxSlots &&
-                 !(region.address & 0xf),
+        R_UNLESS(region.address && region.size >= ArenaSize &&
+                 !(region.address & (FsArena::Alignment - 1)),
                  BadInput);
-        arena_ = region.address;
-        arena_size_ = region.size;
+        arena_.reset(region.address, ArenaSize);
+        R_UNLESS(arena_.ready(), BadInput);
     }
 
-    for (u32 slot = 0; slot < MaxSlots; slot++) {
-        if (used_ & (1u << slot))
-            continue;
-        const u64 address = arena_ + static_cast<u64>(slot) * SlotSize;
-        if (address < arena_ || address + size > arena_ + arena_size_)
-            return OutOfMemory;
-        used_ |= 1u << slot;
-        *out = address;
-        return 0;
-    }
-    return OutOfMemory;
+    R_UNLESS(arena_.allocate(size, out), OutOfMemory);
+    return 0;
 }
 
 void FsHookMemory::release(u64 address, u32 size) {
-    (void)size;
-    if (!arena_ || address < arena_)
-        return;
-    const u64 offset = address - arena_;
-    if (offset % SlotSize)
-        return;
-    const u64 slot = offset / SlotSize;
-    if (slot < MaxSlots)
-        used_ &= ~(1u << slot);
+    // FsArena frees only a range it recorded, so a stale or foreign address
+    // leaves the arena unchanged.
+    arena_.release(address, size);
 }
 
 } // namespace ounce

@@ -750,6 +750,23 @@ void HenServer::servePluginCommand(const ReceivedRequest& request, u32 index,
                 reply.setData(data);
         }
         break;
+    case HenPluginCommand_AllocateFsMemory:
+        if (request.data_size >= sizeof(u64)) {
+            u64 size = 0;
+            std::memcpy(&size, request.data, sizeof(size));
+            u64 address = 0;
+            reply.result = allocateFsMemory(size, owner, &address);
+            if (R_SUCCEEDED(reply.result))
+                reply.setData(address);
+        }
+        break;
+    case HenPluginCommand_FreeFsMemory:
+        if (request.data_size >= sizeof(u64)) {
+            u64 address = 0;
+            std::memcpy(&address, request.data, sizeof(address));
+            reply.result = freeFsMemory(address, owner);
+        }
+        break;
     default:
         break;
     }
@@ -780,6 +797,51 @@ Result HenServer::copyFromFs(const HenFsCopyRequest& request, HenFsCopyReply* ou
     R_TRY(checkCopyRequest(request));
     R_TRY(ensureFsHookMemory());
     return fs_hook_memory_.copyOut(request.address, out->data, request.size);
+}
+
+Result HenServer::allocateFsMemory(u64 size, u32 owner, u64* out_address) {
+    R_UNLESS(out_address && size && owner && size <= HEN_FS_ARENA_SIZE,
+             MAKERESULT(Module_Libnx, LibnxError_BadInput));
+    R_TRY(ensureFsHookMemory());
+
+    FsAllocation* entry = nullptr;
+    for (FsAllocation& candidate : fs_allocations_) {
+        if (!candidate.address) {
+            entry = &candidate;
+            break;
+        }
+    }
+    R_UNLESS(entry, MAKERESULT(Module_Libnx, LibnxError_OutOfMemory));
+
+    u64 address = 0;
+    R_TRY(fs_hook_memory_.allocate(static_cast<u32>(size), &address));
+    // FsArena records the rounded size, so the table must too: release
+    // matches the recorded size exactly.
+    *entry = {address, ounce::FsArena::roundUp(static_cast<u32>(size)), owner};
+    *out_address = address;
+    return 0;
+}
+
+Result HenServer::freeFsMemory(u64 address, u32 owner) {
+    for (FsAllocation& entry : fs_allocations_) {
+        if (!entry.address || entry.address != address)
+            continue;
+        R_UNLESS(entry.owner == owner,
+                 MAKERESULT(Module_Libnx, LibnxError_NotFound));
+        fs_hook_memory_.release(entry.address, entry.size);
+        entry = {};
+        return 0;
+    }
+    return MAKERESULT(Module_Libnx, LibnxError_NotFound);
+}
+
+void HenServer::releaseFsAllocations(u32 owner) {
+    for (FsAllocation& entry : fs_allocations_) {
+        if (entry.address && entry.owner == owner) {
+            fs_hook_memory_.release(entry.address, entry.size);
+            entry = {};
+        }
+    }
 }
 
 Result HenServer::installFsHook(const HenFsHookRequest& request, u32 owner,
@@ -933,6 +995,9 @@ void HenServer::removePlugin(u32 index) {
             plugin_session_owners_[slot] = 0;
         }
     }
+
+    // The plugin's FS allocations go with it; its hooks stay installed.
+    releaseFsAllocations(plugin.token);
 
     plugin_count_--;
     for (u32 next = index; next < plugin_count_; next++)

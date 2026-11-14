@@ -122,5 +122,15 @@ map: any readable or writable FS memory works, not only code. A copy that
 fails partway leaves the chunks before the failure written, in either
 direction.
 
+A handler that needs writable FS memory allocates it with
+`pluginFsAllocate(size, &address)` and releases it with
+`pluginFsFree(address)`. The address is in the same 16 KiB writable arena
+that HEN uses for hook slots, not in FS's heap: allocations are 16-byte
+aligned, not zeroed, and shared with hook slots, so HEN tracks sixteen
+live allocations across all plugins. HEN frees a plugin's allocations
+when its process exits. FS's allocator does not know the range, so do not
+pass it as memory that FS may free or resize; initialize it with
+`pluginFsCopyToFs`.
+
 Plugins link `-lounce_core`, libounce without mimalloc, and keep newlib's
 malloc.

@@ -217,6 +217,32 @@ Result pluginFsCopyToFs(u64 fs_address, const void* data, size_t size);
  */
 Result pluginFsCopyFromFs(u64 fs_address, void* data, size_t size);
 
+/**
+ * @brief Allocates writable memory inside the FS process.
+ * @param size Bytes to allocate, at most HEN_FS_ARENA_SIZE and rounded up
+ *        to HEN_FS_ALLOCATION_ALIGNMENT.
+ * @param[out] out_address The FS address of the allocation.
+ * @note The memory comes from the writable FS arena that HEN also uses for
+ *       hook slots, not from FS's heap. FS's allocator does not know the
+ *       range: do not pass it where FS may free or resize it. The contents
+ *       are not zeroed; initialize them with pluginFsCopyToFs.
+ * @note HEN tracks sixteen live allocations across all plugins, and hook
+ *       slots share the same 16 KiB. A plugin's allocations are freed when
+ *       HEN removes its process; pluginFsFree releases one earlier.
+ * @note The address is valid only in the FS process and only until it is
+ *       freed. Like the copy commands, this needs the FS process handle
+ *       that the bootstrap adopts after the plugins start.
+ */
+Result pluginFsAllocate(u64 size, u64* out_address);
+
+/**
+ * @brief Frees an allocation from pluginFsAllocate.
+ * @param address The FS address that pluginFsAllocate returned.
+ * @note Only the plugin that made the allocation can free it;
+ *       LibnxError_NotFound is returned for any other address.
+ */
+Result pluginFsFree(u64 address);
+
 #ifdef __cplusplus
 }
 #endif

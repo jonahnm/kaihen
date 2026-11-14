@@ -488,6 +488,29 @@ Result pluginFsCopyFromFs(u64 fs_address, void* data, size_t size) {
     return 0;
 }
 
+Result pluginFsAllocate(u64 size, u64* out_address) {
+    if (!out_address || !size)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+
+    Service hook = {};
+    Result rc = openHookService(&hook);
+    if (R_FAILED(rc))
+        return rc;
+    return serviceDispatchInOut(&hook, HenPluginCommand_AllocateFsMemory, size,
+                                *out_address);
+}
+
+Result pluginFsFree(u64 address) {
+    if (!address)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+
+    Service hook = {};
+    Result rc = openHookService(&hook);
+    if (R_SUCCEEDED(rc))
+        rc = serviceDispatchIn(&hook, HenPluginCommand_FreeFsMemory, address);
+    return rc;
+}
+
 Result pluginRuntimeInitializeWithService(Handle* out_ready_event,
                                           Handle* out_control_session) {
     if (!out_control_session)

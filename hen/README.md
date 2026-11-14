@@ -77,6 +77,13 @@ serves them through RO's `RoProcessCopyReadCommand` and
 rather than only code. They need the FS process handle, but not the `kaih:fs`
 port.
 
+Plugins can also allocate writable data from that arena
+(`HenPluginCommand_AllocateFsMemory` and `_FreeFsMemory`) instead of only
+taking hook slots. Both use one 16 KiB range and a first-fit allocator
+(`source/fs_arena.hpp`); HEN tracks 16 live allocations across plugins and
+frees a plugin's allocations when its process exits. The memory is 16-byte
+aligned and not zeroed.
+
 ## SM proxy
 
 Programs never receive FS's SM session: SM closes a session after a request

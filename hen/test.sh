@@ -19,3 +19,5 @@ $cxx $flags -I"$nx/include" -I../libkaihen/include source/inline_hook.cpp source
 build/tests/fs_hook
 $cxx $flags -I"$nx/include" -I../libkaihen/include source/fs_hook_stub.cpp tests/fs_hook_stub_test.cpp -o build/tests/fs_hook_stub
 build/tests/fs_hook_stub
+$cxx $flags -I"$nx/include" -I../libkaihen/include tests/fs_arena_test.cpp -o build/tests/fs_arena
+build/tests/fs_arena

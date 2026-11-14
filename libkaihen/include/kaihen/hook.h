@@ -42,6 +42,10 @@ typedef enum {
     HenPluginCommand_CopyToFs = 68,
     /// Takes HenFsCopyRequest; returns HenFsCopyReply with bytes from FS memory.
     HenPluginCommand_CopyFromFs = 69,
+    /// Takes a u64 size and returns the FS address of an allocation, as u64.
+    HenPluginCommand_AllocateFsMemory = 70,
+    /// Takes the u64 FS address of an allocation to free.
+    HenPluginCommand_FreeFsMemory = 71,
 } HenPluginCommand;
 
 /// The command that HEN sends to a plugin's hook callback session.
@@ -121,6 +125,14 @@ static_assert(sizeof(HenFsCopyReply) == 192, "FS copy reply layout");
 #else
 _Static_assert(sizeof(HenFsCopyReply) == 192, "FS copy reply layout");
 #endif
+
+/// The writable FS arena that HEN shares between hook slots (1 KiB each)
+/// and HenPluginCommand_AllocateFsMemory. The whole arena is 16 KiB; it is
+/// not FS's heap.
+#define HEN_FS_ARENA_SIZE 0x4000
+
+/// The alignment of the addresses that AllocateFsMemory returns.
+#define HEN_FS_ALLOCATION_ALIGNMENT 16
 
 /// The call that the FS bridge stub sends to HEN.
 typedef struct {

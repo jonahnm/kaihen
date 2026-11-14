@@ -34,6 +34,8 @@ class HenServer {
     static constexpr u32 MaxFsHookSessions = 12;
     /// The most handles a request can copy (HIPC's limit).
     static constexpr u32 MaxCopyHandles = 15;
+    /// The live FS allocations that HEN tracks across all plugins.
+    static constexpr u32 MaxFsAllocations = 16;
 
     enum class SessionKind {
         Control,  ///< A session on mig:usr.
@@ -90,6 +92,13 @@ class HenServer {
         }
     };
 
+    /// One live allocation in the shared FS arena.
+    struct FsAllocation {
+        u64 address = 0;
+        u32 size = 0;
+        u32 owner = 0; ///< The plugin record token.
+    };
+
     struct PluginRecord {
         HenPluginName name = {};
         u64 process_id = 0;
@@ -142,6 +151,9 @@ class HenServer {
     Result ensureFsHookMemory();
     Result copyToFs(const HenFsCopyRequest& request);
     Result copyFromFs(const HenFsCopyRequest& request, HenFsCopyReply* out);
+    Result allocateFsMemory(u64 size, u32 owner, u64* out_address);
+    Result freeFsMemory(u64 address, u32 owner);
+    void releaseFsAllocations(u32 owner);
     Result installFsHook(const HenFsHookRequest& request, u32 owner,
                          HenFsHookInfo* out);
     Result invokeFsHook(const HenFsHookCall& call, HenFsHookResult* out);
@@ -168,4 +180,5 @@ class HenServer {
     GameArm game_ = {};
     ounce::FsHookManager fs_hooks_ = {};
     ounce::FsHookMemory fs_hook_memory_ = {};
+    FsAllocation fs_allocations_[MaxFsAllocations] = {};
 };
