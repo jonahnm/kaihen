@@ -137,6 +137,24 @@ Result checkCodeBlock(Handle process, const RoProcessMemoryRequest& request, boo
     return 0;
 }
 
+/// Checks that the range lies in one block of FS memory with @p permission.
+/// The copy commands reach any memory, unlike the hook commands, which stay
+/// within code.
+Result checkDataBlock(Handle process, const RoProcessMemoryRequest& request,
+                      u32 permission) {
+    MemoryInfo info = {};
+    u32 page = 0;
+    const Result rc = svcQueryProcessMemory(&info, &page, process, request.address);
+    if (R_FAILED(rc))
+        return rc;
+
+    const bool inside = request.address >= info.addr && request.size <= info.size &&
+                        request.address - info.addr <= info.size - request.size;
+    if (!inside || !(info.perm & permission))
+        return RoResult_BadRequest;
+    return 0;
+}
+
 /// The pages of a range, mapped into RO.
 struct MappedRange {
     void* local;
@@ -201,6 +219,38 @@ Result writeFsMemory(Handle process, const RoProcessMemoryRequest& request, cons
     return unmapRange(process, range);
 }
 
+Result copyReadFsMemory(Handle process, const RoProcessMemoryRequest& request,
+                        void* output, u64 capacity) {
+    Result rc = checkFsRequest(process, request, MaximumReadSize, capacity);
+    if (R_SUCCEEDED(rc))
+        rc = checkDataBlock(process, request, Perm_R);
+    MappedRange range;
+    if (R_SUCCEEDED(rc))
+        rc = mapRange(process, request.address, request.size, &range);
+    if (R_FAILED(rc))
+        return rc;
+
+    std::memcpy(output, range.bytes, request.size);
+    return unmapRange(process, range);
+}
+
+Result copyWriteFsMemory(Handle process, const RoProcessMemoryRequest& request,
+                         const void* input, u64 capacity) {
+    Result rc = checkFsRequest(process, request, MaximumWriteSize, capacity);
+    if (R_SUCCEEDED(rc))
+        rc = checkDataBlock(process, request, Perm_W);
+    MappedRange range;
+    if (R_SUCCEEDED(rc))
+        rc = mapRange(process, request.address, request.size, &range);
+    if (R_FAILED(rc))
+        return rc;
+
+    std::memcpy(range.bytes, input, request.size);
+    // These bytes are not instructions: only the data cache needs flushing.
+    armDCacheFlush(range.bytes, request.size);
+    return unmapRange(process, range);
+}
+
 /// The CMIF header, or null when it does not fit with @p payload_size bytes
 /// after it.
 const CmifInHeader* getHeader(void* message, const HipcParsedRequest& request, size_t payload_size) {
@@ -240,7 +290,7 @@ bool serveDiagnostics(void* message, const HipcParsedRequest& request) {
     return true;
 }
 
-/// Runs a read, write, find-code or find-base request, or returns
+/// Runs a read, write, copy, find-code or find-base request, or returns
 /// RoResult_BadRequest for any other.
 Result runMemoryCommand(void* message, const HipcParsedRequest& request) {
     const CmifInHeader* header = getHeader(message, request, sizeof(RoProcessMemoryRequest));
@@ -249,10 +299,14 @@ Result runMemoryCommand(void* message, const HipcParsedRequest& request) {
 
     const bool read = header->command_id == RoProcessReadCommand;
     const bool write = header->command_id == RoProcessWriteCommand;
+    const bool copy_in = header->command_id == RoProcessCopyWriteCommand;
+    const bool copy_out = header->command_id == RoProcessCopyReadCommand;
     const bool find = header->command_id == RoProcessFindCodeCommand;
     const bool base = header->command_id == RoProcessFindBaseCommand;
-    if ((!read && !write && !find && !base) ||
-        !hasShape(request, 1, write ? 1 : 0, (read || find || base) ? 1 : 0))
+    const bool known = read || write || copy_in || copy_out || find || base;
+    const bool takes_input = write || copy_in;
+    const bool gives_output = read || copy_out || find || base;
+    if (!known || !hasShape(request, 1, takes_input ? 1 : 0, gives_output ? 1 : 0))
         return RoResult_BadRequest;
 
     const Handle process = request.data.copy_handles[0];
@@ -265,9 +319,19 @@ Result runMemoryCommand(void* message, const HipcParsedRequest& request) {
         return readFsMemory(process, args, hipcGetBufferAddress(&request.data.recv_buffers[0]),
                             hipcGetBufferSize(&request.data.recv_buffers[0]));
     }
+    if (copy_out) {
+        return copyReadFsMemory(process, args,
+                                hipcGetBufferAddress(&request.data.recv_buffers[0]),
+                                hipcGetBufferSize(&request.data.recv_buffers[0]));
+    }
     if (write) {
         return writeFsMemory(process, args, hipcGetBufferAddress(&request.data.send_buffers[0]),
                              hipcGetBufferSize(&request.data.send_buffers[0]));
+    }
+    if (copy_in) {
+        return copyWriteFsMemory(process, args,
+                                 hipcGetBufferAddress(&request.data.send_buffers[0]),
+                                 hipcGetBufferSize(&request.data.send_buffers[0]));
     }
     if (base) {
         RoProcessMemoryRegion region = {};

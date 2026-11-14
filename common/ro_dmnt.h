@@ -6,7 +6,7 @@
 // Private ro:dmnt commands, which kaiHEN uses to read and patch the FS
 // process through RO's process-memory mapping capability. The caller copies
 // the FS process handle in the request; RO checks that it is FS and that the
-// range is FS code memory.
+// range is FS code memory. The copy commands reach FS data memory instead.
 constexpr u32 RoProcessReadCommand = 0x524f0016;     ///< Out buffer: the bytes read, at most 4 MiB.
 constexpr u32 RoProcessWriteCommand = 0x524f0017;    ///< In buffer: the bytes to write, at most 4 KiB.
 /// Finds writable mutable code for HEN's hook trampolines and bridge stubs.
@@ -16,9 +16,17 @@ constexpr u32 RoProcessFindCodeCommand = 0x524f0019;
 /// Finds FS's module base: its lowest static executable code block. Out
 /// buffer: RoProcessMemoryRegion. The address and size are unused.
 constexpr u32 RoProcessFindBaseCommand = 0x524f001a;
+/// Reads any readable FS memory, for the plugin copy interface. Out buffer:
+/// the bytes read, at most 4 MiB. Unlike RoProcessReadCommand, the range
+/// need not be code.
+constexpr u32 RoProcessCopyReadCommand = 0x524f001b;
+/// Writes any writable FS memory, for the plugin copy interface. In buffer:
+/// the bytes to write, at most 4 KiB. Unlike RoProcessWriteCommand, the
+/// range need not be code.
+constexpr u32 RoProcessCopyWriteCommand = 0x524f001c;
 
-/// The input of RoProcessReadCommand, RoProcessWriteCommand,
-/// RoProcessFindCodeCommand and RoProcessFindBaseCommand.
+/// The input of RoProcessReadCommand, RoProcessWriteCommand, the copy
+/// commands, RoProcessFindCodeCommand and RoProcessFindBaseCommand.
 struct RoProcessMemoryRequest {
     u64 process_id; ///< The FS process ID; it must match the copied handle.
     u64 address;

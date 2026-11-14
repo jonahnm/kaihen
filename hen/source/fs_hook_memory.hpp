@@ -26,6 +26,15 @@ class FsHookMemory {
     /// Returns FS's module base, querying RO once and caching the result.
     Result moduleBase(u64* out);
 
+    /// Copies @p size bytes of FS memory at @p address to @p out. Unlike the
+    /// hook backend's read, the range need not be code: this is the plugin
+    /// copy interface.
+    Result copyOut(u64 address, void* out, u32 size);
+
+    /// Copies @p size bytes from @p bytes into FS memory at @p address. Like
+    /// copyOut, it reaches any writable FS memory, not only code.
+    Result copyIn(u64 address, const void* bytes, u32 size);
+
     FsHookBackend backend() {
         return {this, Read, Write, Replace, Allocate, Release};
     }

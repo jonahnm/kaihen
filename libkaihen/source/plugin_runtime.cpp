@@ -12,6 +12,7 @@
 // hook events; the bootstrap asks for a copy of the client end with
 // GetHookSession and gives it to HEN. The bootstrap signals the release event
 // only after that, which is why the plugin keeps serving mig:usr until then.
+#include <cstring>
 #include <switch.h>
 
 #include "../include/kaihen/plugin.h"
@@ -415,6 +416,76 @@ Result pluginFsHookInfo(u32 index, HenFsHookInfo* out) {
     if (R_SUCCEEDED(rc))
         rc = serviceDispatchInOut(&hook, HenPluginCommand_GetFsHookInfo, index, *out);
     return rc;
+}
+
+namespace {
+
+/// The copy interface, one chunk per command: a whole copy does not fit the
+/// 0x100-byte message buffer that HEN and the plugin share.
+constexpr size_t CopyChunkSize = HEN_FS_COPY_CHUNK_SIZE;
+
+Result copyToFsChunk(Service* hook, u64 address, const void* bytes, size_t size) {
+    HenFsCopyRequest request = {};
+    request.address = address;
+    request.size = static_cast<u32>(size);
+    std::memcpy(request.data, bytes, size);
+    return serviceDispatchIn(hook, HenPluginCommand_CopyToFs, request);
+}
+
+Result copyFromFsChunk(Service* hook, u64 address, void* bytes, size_t size) {
+    HenFsCopyRequest request = {};
+    request.address = address;
+    request.size = static_cast<u32>(size);
+    HenFsCopyReply reply = {};
+    const Result rc = serviceDispatchInOut(hook, HenPluginCommand_CopyFromFs,
+                                          request, reply);
+    if (R_SUCCEEDED(rc))
+        std::memcpy(bytes, reply.data, size);
+    return rc;
+}
+
+} // namespace
+
+Result pluginFsCopyToFs(u64 fs_address, const void* data, size_t size) {
+    if ((!data && size) || fs_address > UINT64_MAX - size)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    if (!size)
+        return 0;
+
+    Service hook = {};
+    Result rc = openHookService(&hook);
+    if (R_FAILED(rc))
+        return rc;
+    const auto* bytes = static_cast<const u8*>(data);
+    for (size_t offset = 0; offset < size; offset += CopyChunkSize) {
+        const size_t remaining = size - offset;
+        const size_t chunk = remaining < CopyChunkSize ? remaining : CopyChunkSize;
+        rc = copyToFsChunk(&hook, fs_address + offset, bytes + offset, chunk);
+        if (R_FAILED(rc))
+            return rc;
+    }
+    return 0;
+}
+
+Result pluginFsCopyFromFs(u64 fs_address, void* data, size_t size) {
+    if ((!data && size) || fs_address > UINT64_MAX - size)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    if (!size)
+        return 0;
+
+    Service hook = {};
+    Result rc = openHookService(&hook);
+    if (R_FAILED(rc))
+        return rc;
+    auto* bytes = static_cast<u8*>(data);
+    for (size_t offset = 0; offset < size; offset += CopyChunkSize) {
+        const size_t remaining = size - offset;
+        const size_t chunk = remaining < CopyChunkSize ? remaining : CopyChunkSize;
+        rc = copyFromFsChunk(&hook, fs_address + offset, bytes + offset, chunk);
+        if (R_FAILED(rc))
+            return rc;
+    }
+    return 0;
 }
 
 Result pluginRuntimeInitializeWithService(Handle* out_ready_event,

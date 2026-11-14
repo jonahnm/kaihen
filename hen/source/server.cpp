@@ -18,6 +18,15 @@ bool hasBuffers(const HipcMetadata& meta) {
         meta.num_recv_buffers || meta.num_exch_buffers;
 }
 
+/// Checks a copy request: one nonempty wire chunk, no reserved bits, and an
+/// FS range that does not wrap around the address space.
+Result checkCopyRequest(const HenFsCopyRequest& request) {
+    if (!request.size || request.size > HEN_FS_COPY_CHUNK_SIZE || request.reserved ||
+        request.address > UINT64_MAX - request.size)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    return 0;
+}
+
 } // namespace
 
 HenServer::HenServer() = default;
@@ -681,7 +690,8 @@ u32 HenServer::listedPluginCount() const {
 /// The FS hook interface. It is served on CreatePluginSession sessions only:
 /// the bootstrap gives one to each plugin, and homebrew has no way to obtain
 /// one. HEN writes FS code through RO's ro:dmnt endpoint, so the game arm's
-/// reader and FS process handle must have been adopted first.
+/// reader and FS process handle must have been adopted first. The copy
+/// commands need the same two handles, but not the kaih:fs port.
 void HenServer::servePluginCommand(const ReceivedRequest& request, u32 index,
                                    CommandReply& reply) {
     if (request.num_copy_handles) {
@@ -723,30 +733,63 @@ void HenServer::servePluginCommand(const ReceivedRequest& request, u32 index,
                 reply.setData(info);
         }
         break;
+    case HenPluginCommand_CopyToFs:
+        if (request.data_size >= sizeof(HenFsCopyRequest)) {
+            HenFsCopyRequest copy;
+            std::memcpy(&copy, request.data, sizeof(copy));
+            reply.result = copyToFs(copy);
+        }
+        break;
+    case HenPluginCommand_CopyFromFs:
+        if (request.data_size >= sizeof(HenFsCopyRequest)) {
+            HenFsCopyRequest copy;
+            std::memcpy(&copy, request.data, sizeof(copy));
+            HenFsCopyReply data = {};
+            reply.result = copyFromFs(copy, &data);
+            if (R_SUCCEEDED(reply.result))
+                reply.setData(data);
+        }
+        break;
     default:
         break;
     }
+}
+
+Result HenServer::ensureFsHookMemory() {
+    if (fs_hook_memory_.ready())
+        return 0;
+    const Handle reader = game_.processReader();
+    const Handle process = game_.filesystemProcess();
+    if (reader == INVALID_HANDLE || process == INVALID_HANDLE)
+        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+    fs_hook_memory_.configure(reader, process);
+    if (!fs_hook_memory_.ready())
+        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+    fs_hooks_.setBackend(fs_hook_memory_.backend());
+    return 0;
+}
+
+Result HenServer::copyToFs(const HenFsCopyRequest& request) {
+    R_TRY(checkCopyRequest(request));
+    R_TRY(ensureFsHookMemory());
+    return fs_hook_memory_.copyIn(request.address, request.data, request.size);
+}
+
+Result HenServer::copyFromFs(const HenFsCopyRequest& request, HenFsCopyReply* out) {
+    R_UNLESS(out, MAKERESULT(Module_Libnx, LibnxError_BadInput));
+    R_TRY(checkCopyRequest(request));
+    R_TRY(ensureFsHookMemory());
+    return fs_hook_memory_.copyOut(request.address, out->data, request.size);
 }
 
 Result HenServer::installFsHook(const HenFsHookRequest& request, u32 owner,
                                 HenFsHookInfo* out) {
     if (fs_hook_port_ == INVALID_HANDLE)
         return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
-    if (!fs_hook_memory_.ready()) {
-        const Handle reader = game_.processReader();
-        const Handle process = game_.filesystemProcess();
-        if (reader == INVALID_HANDLE || process == INVALID_HANDLE)
-            return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
-        fs_hook_memory_.configure(reader, process);
-        if (!fs_hook_memory_.ready())
-            return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
-        fs_hooks_.setBackend(fs_hook_memory_.backend());
-    }
+    R_TRY(ensureFsHookMemory());
 
     u64 module_base = 0;
-    const Result rc = fs_hook_memory_.moduleBase(&module_base);
-    if (R_FAILED(rc))
-        return rc;
+    R_TRY(fs_hook_memory_.moduleBase(&module_base));
     return fs_hooks_.install(request, module_base, owner, out);
 }
 

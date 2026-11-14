@@ -69,6 +69,14 @@ process handle that `AdoptGameHandles1` brings. If the named port cannot be
 created, HEN still starts, but a hook install returns
 `LibnxError_NotInitialized`.
 
+The same plugin session copies FS memory in both directions
+(`HenPluginCommand_CopyToFs` and `CopyFromFs`), 192 bytes per request so
+that the request and the reply fit the 0x100-byte message buffer. HEN
+serves them through RO's `RoProcessCopyReadCommand` and
+`RoProcessCopyWriteCommand`, which reach any readable or writable FS memory
+rather than only code. They need the FS process handle, but not the `kaih:fs`
+port.
+
 ## SM proxy
 
 Programs never receive FS's SM session: SM closes a session after a request

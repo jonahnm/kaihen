@@ -72,6 +72,16 @@ Result FsHookMemory::moduleBase(u64* out) {
     return 0;
 }
 
+Result FsHookMemory::copyOut(u64 address, void* out, u32 size) {
+    const RoProcessMemoryRequest request = {process_id_, address, size, 0};
+    return dispatch(RoProcessCopyReadCommand, request, out, size, nullptr, 0);
+}
+
+Result FsHookMemory::copyIn(u64 address, const void* bytes, u32 size) {
+    const RoProcessMemoryRequest request = {process_id_, address, size, 0};
+    return dispatch(RoProcessCopyWriteCommand, request, nullptr, 0, bytes, size);
+}
+
 Result FsHookMemory::write(u64 address, const void* bytes, u32 size) {
     const RoProcessMemoryRequest request = {process_id_, address, size, 0};
     return dispatch(RoProcessWriteCommand, request, nullptr, 0, bytes, size);

@@ -112,5 +112,15 @@ as a fallback to the original function. Hooks stay installed until removed,
 including after the plugin process exits; a hook whose plugin is gone also
 falls back to the original.
 
+An FS address means nothing in the plugin's address space, so a handler
+that needs the data behind one copies it with `pluginFsCopyFromFs(address,
+buffer, size)` and writes changes back with `pluginFsCopyToFs(address,
+buffer, size)`. The copies travel on the same plugin session, one 192-byte
+chunk per command, because HEN's message buffer is 0x100 bytes. HEN reads
+and writes the range through RO, which validates it against FS's memory
+map: any readable or writable FS memory works, not only code. A copy that
+fails partway leaves the chunks before the failure written, in either
+direction.
+
 Plugins link `-lounce_core`, libounce without mimalloc, and keep newlib's
 malloc.

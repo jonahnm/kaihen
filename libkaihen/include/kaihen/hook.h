@@ -18,6 +18,10 @@
  *
  * The original runs through the trampoline that HEN writes into FS code,
  * and returns to the bridge stub. It is not a cross-process call.
+ *
+ * The same session copies bytes between the plugin and FS memory
+ * (HenPluginCommand_CopyToFs and _CopyFromFs), so a handler can read the
+ * data behind the FS addresses it receives without translating addresses.
  */
 #pragma once
 
@@ -34,6 +38,10 @@ typedef enum {
     HenPluginCommand_GetFsHookCount = 66,
     /// Takes a u32 index and returns HenFsHookInfo.
     HenPluginCommand_GetFsHookInfo = 67,
+    /// Takes HenFsCopyRequest; copies its bytes into FS memory.
+    HenPluginCommand_CopyToFs = 68,
+    /// Takes HenFsCopyRequest; returns HenFsCopyReply with bytes from FS memory.
+    HenPluginCommand_CopyFromFs = 69,
 } HenPluginCommand;
 
 /// The command that HEN sends to a plugin's hook callback session.
@@ -82,6 +90,36 @@ typedef struct {
 static_assert(sizeof(HenFsHookInfo) == 32, "FS hook info layout");
 #else
 _Static_assert(sizeof(HenFsHookInfo) == 32, "FS hook info layout");
+#endif
+
+/// The FS memory bytes that one copy command carries. That is what fits the
+/// 0x100-byte message buffer together with the CMIF headers; larger copies
+/// are consecutive commands.
+#define HEN_FS_COPY_CHUNK_SIZE 192
+
+/// One chunk of a copy between the plugin and FS memory.
+typedef struct {
+    u64 address;  ///< The FS address to copy from or to.
+    u32 size;     ///< Bytes in data; at most HEN_FS_COPY_CHUNK_SIZE.
+    u32 reserved; ///< Reserved; must be 0.
+    u8 data[HEN_FS_COPY_CHUNK_SIZE];
+} HenFsCopyRequest;
+
+#ifdef __cplusplus
+static_assert(sizeof(HenFsCopyRequest) == 208, "FS copy request layout");
+#else
+_Static_assert(sizeof(HenFsCopyRequest) == 208, "FS copy request layout");
+#endif
+
+/// The reply of HenPluginCommand_CopyFromFs: the first request.size bytes.
+typedef struct {
+    u8 data[HEN_FS_COPY_CHUNK_SIZE];
+} HenFsCopyReply;
+
+#ifdef __cplusplus
+static_assert(sizeof(HenFsCopyReply) == 192, "FS copy reply layout");
+#else
+_Static_assert(sizeof(HenFsCopyReply) == 192, "FS copy reply layout");
 #endif
 
 /// The call that the FS bridge stub sends to HEN.

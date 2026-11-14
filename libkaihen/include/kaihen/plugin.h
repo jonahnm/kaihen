@@ -189,6 +189,34 @@ Result pluginFsHookCount(u32* out_count);
 /// Returns the FS hook at @p index in installation order.
 Result pluginFsHookInfo(u32 index, HenFsHookInfo* out);
 
+/**
+ * @brief Copies bytes from this plugin into the FS process's memory.
+ * @param fs_address The address in the FS process. It is not a plugin
+ *        address and is not translated.
+ * @param data Bytes to copy; they are read during the call.
+ * @param size Number of bytes, in chunks of HEN_FS_COPY_CHUNK_SIZE.
+ * @note The range must be writable FS memory, such as the buffers and
+ *       structures that an FS function passes by address. RO validates it
+ *       against FS's memory map; a range that is not writable returns
+ *       LibnxError_BadInput.
+ * @note FS addresses are only valid in FS, so this is how a handler reads or
+ *       changes the data behind one. Like the hook commands, the copy needs
+ *       the FS process handle that the bootstrap adopts after the plugins
+ *       start; a call before then returns LibnxError_NotInitialized.
+ * @note A failed chunk ends the copy; the earlier chunks stay written.
+ */
+Result pluginFsCopyToFs(u64 fs_address, const void* data, size_t size);
+
+/**
+ * @brief Copies bytes from the FS process's memory into this plugin.
+ * @param fs_address The address in the FS process to read.
+ * @param[out] data Buffer that receives the bytes. Each chunk is written as
+ *        it arrives, so a failure leaves the earlier chunks in the buffer.
+ * @param size Number of bytes, in chunks of HEN_FS_COPY_CHUNK_SIZE.
+ * @note The range must be readable FS memory.
+ */
+Result pluginFsCopyFromFs(u64 fs_address, void* data, size_t size);
+
 #ifdef __cplusplus
 }
 #endif

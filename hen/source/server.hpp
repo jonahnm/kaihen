@@ -71,7 +71,9 @@ class HenServer {
     /// What a command answers.
     struct CommandReply {
         Result result = MAKERESULT(Module_Libnx, LibnxError_BadInput);
-        u8 data[sizeof(HenPluginName)] = {}; ///< The largest reply.
+        /// The largest reply: a plugin name or a full copy chunk.
+        u8 data[HEN_FS_COPY_CHUNK_SIZE] = {};
+        static_assert(sizeof(HenPluginName) <= sizeof(data), "reply buffer");
         size_t data_size = 0;
         /// A handle the reply copies to the client, or INVALID_HANDLE.
         Handle copy_handle = INVALID_HANDLE;
@@ -136,6 +138,10 @@ class HenServer {
     PluginRecord* findPluginByToken(u32 token);
 
     // Plugin commands and the FS bridge
+    /// Takes the game arm's reader session and FS process handle on first use.
+    Result ensureFsHookMemory();
+    Result copyToFs(const HenFsCopyRequest& request);
+    Result copyFromFs(const HenFsCopyRequest& request, HenFsCopyReply* out);
     Result installFsHook(const HenFsHookRequest& request, u32 owner,
                          HenFsHookInfo* out);
     Result invokeFsHook(const HenFsHookCall& call, HenFsHookResult* out);
