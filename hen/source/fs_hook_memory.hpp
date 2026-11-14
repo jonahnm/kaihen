@@ -23,6 +23,9 @@ class FsHookMemory {
 
     bool ready() const { return process_ != INVALID_HANDLE && process_id_ != 0; }
 
+    /// Returns FS's module base, querying RO once and caching the result.
+    Result moduleBase(u64* out);
+
     FsHookBackend backend() {
         return {this, Read, Write, Replace, Allocate, Release};
     }
@@ -62,6 +65,7 @@ class FsHookMemory {
     Service reader_ = {};
     Handle process_ = INVALID_HANDLE;
     u64 process_id_ = 0;
+    u64 module_base_ = 0;
     u64 arena_ = 0;
     u64 arena_size_ = 0;
     /// One bit per trampoline slot in the arena.

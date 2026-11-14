@@ -53,6 +53,25 @@ Result FsHookMemory::read(u64 address, void* out, u32 size) {
     return dispatch(RoProcessReadCommand, request, out, size, nullptr, 0);
 }
 
+Result FsHookMemory::moduleBase(u64* out) {
+    R_UNLESS(out, BadInput);
+    R_UNLESS(ready(), NotInitialized);
+    if (module_base_) {
+        *out = module_base_;
+        return 0;
+    }
+
+    const RoProcessMemoryRequest request = {process_id_, 0, 0, 0};
+    RoProcessMemoryRegion region = {};
+    R_TRY(dispatch(RoProcessFindBaseCommand, request, &region, sizeof(region),
+                   nullptr, 0));
+    R_UNLESS(region.address, BadInput);
+
+    module_base_ = region.address;
+    *out = module_base_;
+    return 0;
+}
+
 Result FsHookMemory::write(u64 address, const void* bytes, u32 size) {
     const RoProcessMemoryRequest request = {process_id_, address, size, 0};
     return dispatch(RoProcessWriteCommand, request, nullptr, 0, bytes, size);

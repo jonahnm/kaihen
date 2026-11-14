@@ -48,8 +48,9 @@ console. The AArch64 NSO build passes with warnings treated as errors.
   publication, and teardown.
 - `image.cpp`: the existing supported NRO layout.
 - `fs_memory.cpp`: the private `ro:dmnt` endpoint: FS code memory reads and
-  writes, the writable-code lookup for kaiHEN's FS hook trampolines
-  (`../common/ro_dmnt.h`), and RO's diagnostics.
+  writes, the writable-code lookup for kaiHEN's FS hook trampolines, the
+  FS module-base lookup for resolving hook offsets (`../common/ro_dmnt.h`),
+  and RO's diagnostics.
 
 Mapping cleanup remains explicit because unmapping can fail. As in the
 source implementation, a failed partial cleanup retains its ownership

@@ -602,7 +602,12 @@ Result HenServer::installFsHook(const HenFsHookRequest& request, HenFsHookInfo* 
             return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
         fs_hooks_.setBackend(fs_hook_memory_.backend());
     }
-    return fs_hooks_.install(request, out);
+
+    u64 module_base = 0;
+    const Result rc = fs_hook_memory_.moduleBase(&module_base);
+    if (R_FAILED(rc))
+        return rc;
+    return fs_hooks_.install(request, module_base, out);
 }
 
 //-----------------------------------------------------------------------------

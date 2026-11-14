@@ -252,13 +252,14 @@ Result openHookService(Service* out) {
 
 } // namespace
 
-Result pluginFsHookInstall(u64 target, u64 replacement, HenFsHookInfo* out) {
+Result pluginFsHookInstall(u64 target_offset, u64 replacement_offset,
+                           HenFsHookInfo* out) {
     if (!out)
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
     Service hook = {};
     Result rc = openHookService(&hook);
     if (R_SUCCEEDED(rc)) {
-        const HenFsHookRequest request = {target, replacement, 0, 0};
+        const HenFsHookRequest request = {target_offset, replacement_offset, 0, 0};
         rc = serviceDispatchInOut(&hook, HenPluginCommand_InstallFsHook, request, *out);
     }
     return rc;

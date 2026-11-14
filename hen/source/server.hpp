@@ -136,6 +136,6 @@ class HenServer {
     u32 plugin_count_ = 0;
     HenStatus status_ = {};
     GameArm game_ = {};
-    FsHookManager fs_hooks_ = {};
-    FsHookMemory fs_hook_memory_ = {};
+    ounce::FsHookManager fs_hooks_ = {};
+    ounce::FsHookMemory fs_hook_memory_ = {};
 };

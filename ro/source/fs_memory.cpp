@@ -82,6 +82,43 @@ Result findWritableCode(Handle process, const RoProcessMemoryRequest& request,
     return RoResult_OutOfAddressSpace;
 }
 
+/// Finds FS's module base: the lowest static executable code block in its
+/// address space. FS is a single-module system process, so its main text is
+/// that block; HEN resolves plugin hook offsets from it.
+Result findModuleBase(Handle process, const RoProcessMemoryRequest& request,
+                      RoProcessMemoryRegion* out) {
+    Result rc = checkFsProcess(process, request);
+    if (R_FAILED(rc))
+        return rc;
+
+    u64 begin = 0;
+    u64 size = 0;
+    if (R_FAILED(svcGetInfo(&begin, InfoType_AslrRegionAddress, process, 0)) ||
+        R_FAILED(svcGetInfo(&size, InfoType_AslrRegionSize, process, 0)) ||
+        !size || begin > UINT64_MAX - size)
+        return RoResult_BadRequest;
+    const u64 end = begin + size;
+
+    for (u32 block = 0; block < MaxScanBlocks && begin < end; block++) {
+        MemoryInfo info = {};
+        u32 page = 0;
+        rc = svcQueryProcessMemory(&info, &page, process, begin);
+        if (R_FAILED(rc))
+            return rc;
+        if (!info.size || info.addr > UINT64_MAX - info.size ||
+            info.addr + info.size <= begin)
+            return RoResult_BadRequest;
+
+        if (info.type == MemType_CodeStatic &&
+            (info.perm & Perm_Rx) == Perm_Rx && !info.attr) {
+            *out = {info.addr, info.size, info.type, info.perm, info.attr, 0};
+            return 0;
+        }
+        begin = info.addr + info.size;
+    }
+    return RoResult_OutOfAddressSpace;
+}
+
 /// Checks that the range lies in one block of FS code memory: static or
 /// mutable code for a read, writable mutable code for a write.
 Result checkCodeBlock(Handle process, const RoProcessMemoryRequest& request, bool write) {
@@ -203,8 +240,8 @@ bool serveDiagnostics(void* message, const HipcParsedRequest& request) {
     return true;
 }
 
-/// Runs a read, write or find-code request, or returns RoResult_BadRequest
-/// for any other.
+/// Runs a read, write, find-code or find-base request, or returns
+/// RoResult_BadRequest for any other.
 Result runMemoryCommand(void* message, const HipcParsedRequest& request) {
     const CmifInHeader* header = getHeader(message, request, sizeof(RoProcessMemoryRequest));
     if (!header || header->magic != CMIF_IN_HEADER_MAGIC)
@@ -213,8 +250,9 @@ Result runMemoryCommand(void* message, const HipcParsedRequest& request) {
     const bool read = header->command_id == RoProcessReadCommand;
     const bool write = header->command_id == RoProcessWriteCommand;
     const bool find = header->command_id == RoProcessFindCodeCommand;
-    if ((!read && !write && !find) ||
-        !hasShape(request, 1, write ? 1 : 0, (read || find) ? 1 : 0))
+    const bool base = header->command_id == RoProcessFindBaseCommand;
+    if ((!read && !write && !find && !base) ||
+        !hasShape(request, 1, write ? 1 : 0, (read || find || base) ? 1 : 0))
         return RoResult_BadRequest;
 
     const Handle process = request.data.copy_handles[0];
@@ -230,6 +268,17 @@ Result runMemoryCommand(void* message, const HipcParsedRequest& request) {
     if (write) {
         return writeFsMemory(process, args, hipcGetBufferAddress(&request.data.send_buffers[0]),
                              hipcGetBufferSize(&request.data.send_buffers[0]));
+    }
+    if (base) {
+        RoProcessMemoryRegion region = {};
+        Result rc = findModuleBase(process, args, &region);
+        void* output = hipcGetBufferAddress(&request.data.recv_buffers[0]);
+        const u64 capacity = hipcGetBufferSize(&request.data.recv_buffers[0]);
+        if (R_SUCCEEDED(rc) && (!output || capacity < sizeof(region)))
+            rc = RoResult_BadRequest;
+        if (R_SUCCEEDED(rc))
+            std::memcpy(output, &region, sizeof(region));
+        return rc;
     }
 
     RoProcessMemoryRegion region = {};

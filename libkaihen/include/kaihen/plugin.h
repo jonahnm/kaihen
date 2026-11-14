@@ -138,11 +138,11 @@ void pluginRuntimeExit(void);
 
 /**
  * @brief Installs an inline hook in FS.
- * @param target The FS function entry. A pointer-authentication signature is
- *        stripped.
- * @param replacement The existing FS code that the target's entry branches
- *        to. A replacement farther than 128 MiB from the target is reached
- *        indirectly and must start with a BTI landing pad.
+ * @param target_offset The FS function entry's offset from the base of the
+ *        FS module.
+ * @param replacement_offset The existing FS code's offset from the base of
+ *        the FS module. A replacement farther than 128 MiB from the target
+ *        is reached indirectly and must start with a BTI landing pad.
  * @param[out] out The installed hook, including the trampoline that runs the
  *        original prologue and jumps back.
  * @note Only plugins have this interface: HEN serves it on the session that
@@ -151,7 +151,8 @@ void pluginRuntimeExit(void);
  *       after the plugins start; a call before then returns
  *       LibnxError_NotInitialized.
  */
-Result pluginFsHookInstall(u64 target, u64 replacement, HenFsHookInfo* out);
+Result pluginFsHookInstall(u64 target_offset, u64 replacement_offset,
+                           HenFsHookInfo* out);
 
 /// Restores the original instructions of an installed FS hook.
 Result pluginFsHookRemove(u32 id);

@@ -4,8 +4,8 @@
  * The FS hook interface that only plugins receive. HEN creates a plugin
  * session for each plugin during the bootstrap's handoff and serves these
  * commands on it alone: the homebrew interface (protocol.h) does not have
- * them. A target and a replacement are addresses in the FS process; HEN
- * strips their pointer-authentication signatures, replaces the first
+ * them. A target and a replacement are offsets from the base of the FS
+ * module; HEN resolves them in the FS process, replaces the first
  * instructions of the target with a branch to the replacement, and keeps the
  * original instructions in a trampoline that the plugin can call.
  */
@@ -28,9 +28,9 @@ typedef enum {
 
 /// A request to hook an FS function.
 typedef struct {
-    u64 target;      ///< The FS function entry. A PAC-signed pointer is accepted.
-    u64 replacement; ///< The FS code that the entry branches to; also PAC-stripped.
-    u32 flags;       ///< Reserved; must be 0.
+    u64 target_offset;      ///< The FS function entry's offset from the module base.
+    u64 replacement_offset; ///< The replacement's offset from the module base.
+    u32 flags;              ///< Reserved; must be 0.
     u32 reserved;
 } HenFsHookRequest;
 
@@ -44,8 +44,8 @@ _Static_assert(sizeof(HenFsHookRequest) == 24, "FS hook request layout");
 typedef struct {
     u32 id;          ///< The ID that RemoveFsHook takes.
     u32 state;       ///< HEN_FS_HOOK_INSTALLED.
-    u64 target;      ///< The canonical, PAC-stripped function entry.
-    u64 replacement; ///< The canonical, PAC-stripped branch destination.
+    u64 target;      ///< The resolved, PAC-stripped function entry address.
+    u64 replacement; ///< The resolved, PAC-stripped branch destination address.
     u64 trampoline;  ///< Writable FS code that runs the original prologue and jumps back.
 } HenFsHookInfo;
 

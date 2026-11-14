@@ -82,22 +82,24 @@ without hooks. The handoff carries one more input handle than before;
 rebuild plugins against this runtime, because a runtime built before it
 rejects the three-handle handoff.
 
-`pluginFsHookInstall(target, replacement, &info)` replaces the first
-instructions of an FS function with a branch to `replacement`, and writes a
-trampoline into writable FS code. `target` and `replacement` are addresses in
-FS; HEN strips their pointer-authentication signatures and keeps a BTI
-landing pad at the function entry. It copies PAC prologues (`PACIASP` and
-the other SP-based forms) into the trampoline, so the function's
-`AUTIASP` still verifies its link register. A replacement farther than
-128 MiB from the target is reached with an indirect branch and must start
-with a BTI landing pad. The returned `info.trampoline` runs the original
-prologue and jumps back; `pluginFsHookRemove` restores the original
+`pluginFsHookInstall(target_offset, replacement_offset, &info)` replaces the
+first instructions of an FS function with a branch to the replacement, and
+writes a trampoline into writable FS code. Both offsets are relative to the
+base of the FS module; HEN resolves them against the FS module base that RO
+finds. It keeps a BTI landing pad at the function entry and copies PAC
+prologues (`PACIASP` and the other SP-based forms) into the trampoline, so
+the function's `AUTIASP` still verifies its link register. A replacement
+farther than 128 MiB from the target is reached with an indirect branch and
+must start with a BTI landing pad. The returned `info.trampoline` runs the
+original prologue and jumps back; `pluginFsHookRemove` restores the original
 instructions.
 
 HEN writes FS code through RO's `ro:dmnt` endpoint, which needs the FS
-process handle that the bootstrap adopts after the plugins start. A hook
-install before then returns `LibnxError_NotInitialized`. Hooks stay installed
-until removed, including after the plugin's session closes.
+process handle that the bootstrap adopts after the plugins start. The same
+endpoint supplies FS's module base for offset resolution. A hook install
+before the FS process is available returns `LibnxError_NotInitialized`.
+Hooks stay installed until removed, including after the plugin's session
+closes.
 
 Plugins link `-lounce_core`, libounce without mimalloc, and keep newlib's
 malloc.

@@ -45,11 +45,13 @@ HEN gives each plugin a session of its own for FS hooks, created by
 never serve those commands. HEN builds AArch64 inline hooks
 (`source/inline_hook.cpp`): the patched entry branches to the plugin's
 replacement, and a trampoline keeps the overwritten prologue executable.
-PAC-signed targets are stripped, a BTI landing pad stays in place, and the
-trampoline runs the original PAC prologue. The patch and trampoline are
-written to FS through RO's `ro:dmnt` endpoint; a trampoline arena comes from
-RO's writable-code lookup, and HEN uses the FS process handle that
-`AdoptGameHandles1` brings.
+Targets and replacements are offsets from the FS module base; a BTI landing
+pad stays in place, and the trampoline runs the original PAC prologue. The
+patch and trampoline are written to FS through RO's `ro:dmnt` endpoint; a
+trampoline arena comes from
+RO's writable-code lookup, and its module base comes from RO's image-base
+lookup. HEN uses the FS process handle that `AdoptGameHandles1` brings, and
+hook targets and replacements are offsets from that module base.
 
 ## SM proxy
 

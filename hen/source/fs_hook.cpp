@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "fs_hook.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include "../../common/result.hpp"
 
@@ -47,14 +48,19 @@ const FsHookManager::Entry* FsHookManager::find(u32 id) const {
     return nullptr;
 }
 
-Result FsHookManager::install(const HenFsHookRequest& request, HenFsHookInfo* out) {
+Result FsHookManager::install(const HenFsHookRequest& request, u64 module_base,
+                              HenFsHookInfo* out) {
     R_UNLESS(out, BadInput);
     R_UNLESS(hasBackend(backend_), NotInitialized);
+    R_UNLESS(module_base, BadInput);
     R_UNLESS(request.flags == 0, BadInput);
     R_UNLESS(count_ < MaxHooks, OutOfMemory);
+    R_UNLESS(request.target_offset <= UINT64_MAX - module_base &&
+             request.replacement_offset <= UINT64_MAX - module_base,
+             BadInput);
 
-    const u64 target = hook::StripPac(request.target);
-    const u64 replacement = hook::StripPac(request.replacement);
+    const u64 target = hook::StripPac(module_base + request.target_offset);
+    const u64 replacement = hook::StripPac(module_base + request.replacement_offset);
     R_UNLESS(target && replacement && !(target & 3) && !(replacement & 3), BadInput);
     for (u32 index = 0; index < count_; index++) {
         if (entries_[index].info.target == target)

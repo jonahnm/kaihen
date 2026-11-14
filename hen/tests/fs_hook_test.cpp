@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Host tests of FsHookManager (source/fs_hook.cpp) with a byte buffer in
-// place of FS code memory: install, preimage checks, PAC and BTI targets,
-// removal, compaction and the failure paths.
+// place of FS code memory: module-base offset resolution, preimage checks,
+// BTI targets, removal, compaction and the failure paths.
 
 #include <cstdio>
 #include <cstring>
@@ -12,6 +12,7 @@ using namespace ounce;
 namespace {
 
 constexpr u32 MemorySize = 0x10000;
+constexpr u64 ModuleBase = 0x100;
 constexpr u64 Replacement = 0x300;
 constexpr u64 Arena = 0x8000;
 
@@ -110,7 +111,7 @@ void testInstallAndRemove() {
     FsHookManager manager;
     manager.setBackend(backend(&memory));
     HenFsHookInfo info = {};
-    Result rc = manager.install({0x100, Replacement, 0, 0}, &info);
+    Result rc = manager.install({0, Replacement - ModuleBase, 0, 0}, ModuleBase, &info);
     expect(R_SUCCEEDED(rc), "hook installs");
     expect(info.id == 1 && info.state == HEN_FS_HOOK_INSTALLED, "hook identity");
     expect(info.target == 0x100 && info.replacement == Replacement, "hook addresses");
@@ -127,7 +128,7 @@ void testInstallAndRemove() {
            "hook is listed by index");
     expect(manager.info(1, &listed) == NotFound, "missing index");
 
-    expect(manager.install({0x100, Replacement, 0, 0}, &info) == AlreadyInstalled,
+    expect(manager.install({0, Replacement - ModuleBase, 0, 0}, ModuleBase, &info) == AlreadyInstalled,
            "duplicate target is refused");
 
     expect(R_SUCCEEDED(manager.remove(info.id)), "hook removes");
@@ -136,7 +137,7 @@ void testInstallAndRemove() {
     expect(manager.remove(info.id) == NotFound, "removing twice fails");
 }
 
-void testPacAndBtiTargets() {
+void testOffsetAndBtiTargets() {
     FakeMemory memory;
     fillNops(memory.bytes, 0x100, 8);
     fillNops(memory.bytes, 0x200, 8);
@@ -148,13 +149,16 @@ void testPacAndBtiTargets() {
     manager.setBackend(backend(&memory));
 
     HenFsHookInfo info = {};
-    const u64 signed_target = (0xABull << 40) | 0x100;
-    expect(R_SUCCEEDED(manager.install({signed_target, Replacement, 0, 0}, &info)),
-           "PAC-signed target installs");
-    expect(info.target == 0x100, "PAC-signed target is stripped");
+    expect(R_SUCCEEDED(manager.install({0, Replacement - ModuleBase, 0, 0},
+                                       ModuleBase, &info)),
+           "module-base offset installs");
+    expect(info.target == 0x100, "target offset resolves from the module base");
+    expect(info.replacement == Replacement,
+           "replacement offset resolves from the module base");
 
     HenFsHookInfo bti = {};
-    expect(R_SUCCEEDED(manager.install({0x200, Replacement, 0, 0}, &bti)),
+    expect(R_SUCCEEDED(manager.install({0x100, Replacement - ModuleBase, 0, 0},
+                                       ModuleBase, &bti)),
            "BTI target installs");
     expect(word(memory.bytes, 0x200) == 0xD503245Fu,
            "BTI landing pad is kept");
@@ -173,31 +177,38 @@ void testFailures() {
     manager.setBackend(backend(&memory));
     HenFsHookInfo info = {};
 
-    expect(manager.install({0x101, Replacement, 0, 0}, &info) == BadInput,
+    expect(manager.install({0x001, Replacement - ModuleBase, 0, 0},
+                           ModuleBase, &info) == BadInput,
            "unaligned target is refused");
-    expect(manager.install({0x100, 0x302, 0, 0}, &info) == BadInput,
+    expect(manager.install({0, Replacement - ModuleBase + 2, 0, 0},
+                           ModuleBase, &info) == BadInput,
            "unaligned replacement is refused");
-    expect(manager.install({0x100, Replacement, 1, 0}, &info) == BadInput,
+    expect(manager.install({0, Replacement - ModuleBase, 1, 0},
+                           ModuleBase, &info) == BadInput,
            "flags are refused");
-    expect(manager.install({0x100, 0, 0, 0}, &info) == BadInput,
-           "missing replacement is refused");
-    expect(manager.install({0xFFF8, Replacement, 0, 0}, &info) == BadInput,
+    expect(manager.install({0, 0, 0, 0}, 0, &info) == BadInput,
+           "missing module base is refused");
+    expect(manager.install({0xFEF8, Replacement - ModuleBase, 0, 0},
+                           ModuleBase, &info) == BadInput,
            "unreadable target is refused");
 
     memory.fail_allocate = true;
-    expect(manager.install({0x100, Replacement, 0, 0}, &info) == OutOfMemory,
+    expect(manager.install({0, Replacement - ModuleBase, 0, 0},
+                           ModuleBase, &info) == OutOfMemory,
            "allocation failure is reported");
     memory.fail_allocate = false;
 
     memory.fail_write = true;
-    expect(manager.install({0x100, Replacement, 0, 0}, &info) == OutOfMemory,
+    expect(manager.install({0, Replacement - ModuleBase, 0, 0},
+                           ModuleBase, &info) == OutOfMemory,
            "trampoline write failure is reported");
     memory.fail_write = false;
     expect(manager.count() == 0, "failed installs leave no hook");
     expect(word(memory.bytes, 0x100) == 0xD503201Fu,
            "failed installs leave the target alone");
 
-    expect(R_SUCCEEDED(manager.install({0x100, Replacement, 0, 0}, &info)),
+    expect(R_SUCCEEDED(manager.install({0, Replacement - ModuleBase, 0, 0},
+                                       ModuleBase, &info)),
            "hook installs before the preimage test");
     put(memory.bytes, 0x100, 0xD503201Fu);
     expect(manager.remove(info.id) == BadInput,
@@ -217,12 +228,14 @@ void testFullTableAndCompaction() {
     HenFsHookInfo info = {};
     for (u32 index = 0; index < FsHookManager::MaxHooks; index++) {
         expect(R_SUCCEEDED(manager.install(
-                   {0x1000 + index * 0x20, Replacement, 0, 0}, &info)),
+                   {0x1000 + index * 0x20 - ModuleBase,
+                    Replacement - ModuleBase, 0, 0}, ModuleBase, &info)),
                "table fills");
         expect(info.id == index + 1, "ids increase");
     }
     expect(manager.count() == FsHookManager::MaxHooks, "full count");
-    expect(manager.install({0x2000, Replacement, 0, 0}, &info) == OutOfMemory,
+    expect(manager.install({0x2000 - ModuleBase, Replacement - ModuleBase, 0, 0},
+                           ModuleBase, &info) == OutOfMemory,
            "a full table is refused");
 
     // Remove the first hook: the rest shift down but keep their IDs.
@@ -243,7 +256,7 @@ void testFullTableAndCompaction() {
 
 int main() {
     testInstallAndRemove();
-    testPacAndBtiTargets();
+    testOffsetAndBtiTargets();
     testFailures();
     testFullTableAndCompaction();
     if (g_failures) {

@@ -13,18 +13,23 @@ constexpr u32 RoProcessWriteCommand = 0x524f0017;    ///< In buffer: the bytes t
 /// RoProcessMemoryRegion. The address in the request is unused.
 /// (0x524f0018 is RO's diagnostics command.)
 constexpr u32 RoProcessFindCodeCommand = 0x524f0019;
+/// Finds FS's module base: its lowest static executable code block. Out
+/// buffer: RoProcessMemoryRegion. The address and size are unused.
+constexpr u32 RoProcessFindBaseCommand = 0x524f001a;
 
-/// The input of RoProcessReadCommand, RoProcessWriteCommand and
-/// RoProcessFindCodeCommand.
+/// The input of RoProcessReadCommand, RoProcessWriteCommand,
+/// RoProcessFindCodeCommand and RoProcessFindBaseCommand.
 struct RoProcessMemoryRequest {
     u64 process_id; ///< The FS process ID; it must match the copied handle.
     u64 address;
-    u64 size; ///< For RoProcessFindCodeCommand, the least usable bytes.
+    u64 size; ///< For RoProcessFindCodeCommand, the least usable bytes; otherwise unused.
     u64 reserved;
 };
 static_assert(sizeof(RoProcessMemoryRequest) == 32);
 
-/// The reply of RoProcessFindCodeCommand: one writable mutable code block.
+/// The reply of RoProcessFindCodeCommand or RoProcessFindBaseCommand: one
+/// code block. For FindBase it is FS's module text; for FindCode it is
+/// writable mutable code.
 struct RoProcessMemoryRegion {
     u64 address;
     u64 size;

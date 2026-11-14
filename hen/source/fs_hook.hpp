@@ -37,8 +37,10 @@ class FsHookManager {
 
     void setBackend(const FsHookBackend& backend) { backend_ = backend; }
 
-    /// Installs a hook from request.target to request.replacement.
-    Result install(const HenFsHookRequest& request, HenFsHookInfo* out);
+    /// Installs a hook at request.target_offset from @p module_base, branching
+    /// to request.replacement_offset from the same base.
+    Result install(const HenFsHookRequest& request, u64 module_base,
+                   HenFsHookInfo* out);
 
     /// Restores the target's original instructions and frees its trampoline.
     Result remove(u32 id);
